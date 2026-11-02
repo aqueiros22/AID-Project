@@ -1,0 +1,19 @@
+# Ambientes Virtuais de Python
+.venv/
+venv/
+ENV/
+env/
+env.bak/
+venv.bak/
+
+# Ficheiros e pastas gerados pelo Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# Reproducible dimensional dataset output
+refined/
+
+data.tsv
