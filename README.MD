@@ -1,5 +1,7 @@
 ﻿# Dimensional Analysis of IMDb Audiovisual Titles
 
+Download the project dataset from [Google Drive](https://drive.google.com/file/d/1vTW1wmApo5b8ZvQGzIOJ8E2XF4GIFgJc/view?usp=sharing).
+
 ## 1. Subject Description and Assignment Requirements
 
 ### 1.1. Subject and Objectives
