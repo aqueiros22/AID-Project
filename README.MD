@@ -1,228 +1,226 @@
-# Análise dimensional de títulos audiovisuais do IMDb
+﻿# Dimensional Analysis of IMDb Audiovisual Titles
 
-## 1. Descrição do tema e requisitos do trabalho
+## 1. Subject Description and Assignment Requirements
 
-### 1.1. Tema e objetivos
+### 1.1. Subject and Objectives
 
-Este projeto tem como tema a análise da evolução dos títulos audiovisuais
-representados numa extração de metadados do IMDb. Pretende-se estudar os
-lançamentos por ano e a evolução do catálogo acumulado, distinguindo o tipo de
-título, a combinação de géneros e a sinalização de conteúdo adulto.
+This project analyses the evolution of audiovisual titles represented in an
+IMDb metadata extract. It examines releases by year and the growth of the
+cumulative catalog, distinguishing title types, genre combinations, and adult
+content flags.
 
-O modelo suporta dois processos analíticos: a contabilização dos títulos no
-respetivo ano de lançamento/início e a reconstrução do total de títulos
-lançados até ao final de cada ano. Assim, permite analisar tanto a atividade
-anual como a dimensão acumulada do catálogo representado na extração.
+The model supports two analytical processes: counting titles in their release
+or start year, and reconstructing the total number of titles released by the
+end of each year. This allows analysis of both annual activity and the
+cumulative size of the catalog represented in the extract.
 
-As principais perguntas de análise são:
+The main analytical questions are:
 
-- Como evoluiu o número anual de títulos lançados?
-- Quais os tipos de título e as combinações de géneros mais representados?
-- Como se distribuem os lançamentos pela sinalização de conteúdo adulto?
-- Qual a duração total conhecida e a duração média conhecida por categoria e ano?
-- Quantos títulos da extração tinham sido lançados até determinado ano?
-- Como evoluiu a composição do catálogo acumulado?
+- How has the annual number of released titles evolved?
+- Which title types and genre combinations are most represented?
+- How are releases distributed by adult content flag?
+- What are the total known runtime and average known runtime by category and year?
+- How many titles in the extract had been released by a given year?
+- How has the composition of the cumulative catalog evolved?
 
-### 1.2. Fonte de dados e âmbito
+### 1.2. Data Source and Scope
 
-A fonte utilizada é o ficheiro local `data.tsv`, com 7 697 093 registos e os
-campos `tconst`, `titleType`, `primaryTitle`, `originalTitle`, `isAdult`,
-`startYear`, `endYear`, `runtimeMinutes` e `genres`.
+The source is the local `data.tsv` file, containing 7,697,093 records and the
+fields `tconst`, `titleType`, `primaryTitle`, `originalTitle`, `isAdult`,
+`startYear`, `endYear`, `runtimeMinutes`, and `genres`.
 
-O ficheiro contém metadados de títulos; não contém vendas, receitas, visualizações,
-disponibilidade em plataformas ou avaliações. As análises incidem, portanto,
-na quantidade e nas características dos títulos presentes nesta extração.
-A data de obtenção e a versão da extração não estão registadas no projeto.
+The file contains title metadata; it does not contain sales, revenue, viewing
+figures, platform availability, or ratings. Analysis therefore focuses on the
+number and characteristics of the titles present in this extract. The
+acquisition date and extract version are not recorded in the project.
 
-São incluídos os registos com `startYear` numérico entre 1 e o ano-limite
-configurado. Para séries, este campo corresponde ao ano de início. Os títulos
-sem ano elegível são excluídos, sem se inventarem datas. Todos os tipos de
-título elegíveis são mantidos, incluindo filmes, séries e episódios.
+Records are included when `startYear` is numeric and falls between 1 and the
+configured cutoff year. For series, this field represents the start year.
+Titles without an eligible year are excluded without inventing dates. All
+eligible title types are retained, including movies, series, and episodes.
 
-Os resultados atuais, registados em [validation_report.json](refined/validation_report.json), são:
+The current results, recorded in [validation_report.json](refined/validation_report.json), are:
 
-| Indicador | Valor |
+| Indicator | Value |
 | --- | ---: |
-| Registos na fonte | 7 697 093 |
-| Registos na tabela de factos de lançamentos | 6 901 413 |
-| Registos excluídos por ano desconhecido ou fora do intervalo | 795 680 |
-| Títulos com duração conhecida e positiva | 2 138 467 |
-| Soma das durações conhecidas, em minutos | 94 369 177 |
-| Registos na tabela de snapshots | 402 194 |
-| Intervalo temporal | 1874–2026 |
+| Source records | 7,697,093 |
+| Release fact table records | 6,901,413 |
+| Records excluded due to unknown or out-of-range years | 795,680 |
+| Titles with known positive runtime | 2,138,467 |
+| Total known runtime, in minutes | 94,369,177 |
+| Snapshot fact table records | 402,194 |
+| Time range | 1874–2026 |
 
-O limite atual é 2026. À data de elaboração, 2 de novembro de 2026, este ano
-ainda está incompleto. O snapshot identificado por `2026-12-31` é uma referência
-convencional de fim de ano, calculada a partir da extração disponível, e não uma
-observação realizada nessa data. Para analisar apenas anos civis completos,
-deve gerar-se novamente o conjunto com `--cutoff-year 2025`.
+The current cutoff is 2026. As of the preparation date, 2 November 2026, this
+year is still incomplete. The snapshot identified by `2026-12-31` is a
+conventional year-end reference calculated from the available extract, rather
+than an observation made on that date. To analyse only complete calendar years,
+regenerate the dataset with `--cutoff-year 2025`.
 
-### 1.3. Correspondência com os requisitos
+### 1.3. Mapping to Assignment Requirements
 
-| Requisito do trabalho | Implementação |
+| Assignment requirement | Implementation |
 | --- | --- |
-| Mais de 10 000 factos | A tabela `fact_title_release` contém 6 901 413 registos. |
-| Pelo menos uma medida aditiva | `title_count`, `runtime_minutes` e `runtime_known_count` na tabela de lançamentos. |
-| Factos agregados ou snapshots com uma medida semi-aditiva | A tabela `fact_year_end_catalog` contém contagens e durações acumuladas, aditivas entre categorias num mesmo ano e não aditivas ao longo dos anos. |
-| Pelo menos quatro dimensões, incluindo uma temporal | Ano, tipo de título, combinação de géneros e sinalização de conteúdo adulto. |
-| Dimensões comuns aos dois tipos de factos | As quatro dimensões são partilhadas pelas duas tabelas de factos. |
+| More than 10,000 facts | `fact_title_release` contains 6,901,413 records. |
+| At least one additive measure | `title_count`, `runtime_minutes`, and `runtime_known_count` in the release fact table. |
+| Aggregated facts or snapshots with a semi-additive measure | `fact_year_end_catalog` contains cumulative counts and runtimes, additive across categories within the same year but not across years. |
+| At least four dimensions, including a temporal dimension | Year, title type, genre combination, and adult content flag. |
+| Dimensions shared by both types of facts | All four dimensions are shared by both fact tables. |
 
-A interpretação dos snapshots é a de **catálogo de lançamentos reconstruído**:
-contam-se os títulos desta extração cujo ano de lançamento/início é anterior
-ou igual ao ano analisado. Não se pretende representar o conteúdo efetivo da
-base de dados IMDb em cada data histórica. Caso o enunciado exija snapshots
-operacionais observados historicamente, será necessária uma fonte adicional
-com observações datadas.
+The snapshots represent a **reconstructed release catalog**: they count titles
+in this extract whose release/start year is earlier than or equal to the year
+being analysed. They do not represent the actual contents of the IMDb database
+at each historical date. If the assignment requires historically observed
+operational snapshots, an additional source with dated observations will be
+necessary.
 
-## 2. Planeamento dimensional
+## 2. Dimensional Planning
 
-### 2.1. Matriz de barramento dimensional
+### 2.1. Dimensional Bus Matrix
 
-A matriz relaciona os processos analíticos com as dimensões conformadas,
-isto é, dimensões com os mesmos membros, chaves e significado em ambos os processos.
+The matrix relates analytical processes to conformed dimensions: dimensions
+with the same members, keys, and meaning in both processes.
 
-| Processo / tabela de factos | Ano | Tipo de título | Combinação de géneros | Conteúdo adulto |
+| Process / fact table | Year | Title type | Genre combination | Adult content flag |
 | --- | :---: | :---: | :---: | :---: |
-| Lançamentos — `fact_title_release` | X | X | X | X |
-| Catálogo acumulado anual — `fact_year_end_catalog` | X | X | X | X |
+| Releases — `fact_title_release` | X | X | X | X |
+| Annual cumulative catalog — `fact_year_end_catalog` | X | X | X | X |
 
-Na primeira tabela, o ano identifica o lançamento/início do título. Na segunda,
-identifica o ano de referência do snapshot. A dimensão é comum, mas o seu papel
-temporal depende do processo analisado.
+In the first table, the year identifies the title's release/start year. In the
+second, it identifies the snapshot reference year. The dimension is shared,
+but its temporal role depends on the process being analysed.
 
-### 2.2. Dicionário de dimensões
+### 2.2. Dimension Dictionary
 
-Os tipos seguintes são tipos lógicos propostos para importação numa base de
-dados relacional. Os ficheiros CSV não impõem tipos, chaves ou restrições.
-As chaves de categoria são inteiros atribuídos pelo processo de transformação.
+The following are proposed logical types for import into a relational
+database. CSV files do not enforce types, keys, or constraints. Category keys
+are integers assigned by the transformation process.
 
-#### Dimensão temporal — `dim_year`
+#### Time Dimension — `dim_year`
 
-Granularidade: um registo por ano, incluindo anos sem lançamentos entre o
-primeiro ano elegível e o limite configurado. Atualmente contém 153 membros.
+Grain: one record per year, including years without releases between the
+first eligible year and the configured cutoff. It currently contains 153 members.
 
-| Atributo | Tipo lógico | Papel | Descrição |
+| Attribute | Logical type | Role | Description |
 | --- | --- | --- | --- |
-| `year_key` | INTEGER | PK | Chave natural numérica do ano. |
-| `year` | INTEGER | Atributo | Ano civil. |
-| `decade` | INTEGER | Atributo | Primeiro ano da década, calculado por divisão inteira; por exemplo, 1990. |
-| `century` | INTEGER | Atributo | Século civil; por exemplo, 2000 pertence ao século XX e 2001 ao XXI. |
-| `snapshot_date` | DATE | Atributo | Referência convencional de 31 de dezembro do ano. |
+| `year_key` | INTEGER | PK | Numeric natural key for the year. |
+| `year` | INTEGER | Attribute | Calendar year. |
+| `decade` | INTEGER | Attribute | First year of the decade, calculated using integer division; for example, 1990. |
+| `century` | INTEGER | Attribute | Calendar century; for example, 2000 belongs to the 20th century and 2001 to the 21st. |
+| `snapshot_date` | DATE | Attribute | Conventional reference date of 31 December in that year. |
 
-Permite agregações de ano para década ou de ano para século. Década e século
-são agrupamentos alternativos: a convenção de décadas usada pode atravessar a
-fronteira de um século. Não se assume uma hierarquia estrita década → século.
-Não existem meses ou dias de lançamento na fonte utilizada.
+Supports aggregation from year to decade or from year to century. Decade and
+century are alternative groupings: the decade convention used can cross a
+century boundary. A strict decade → century hierarchy is not assumed.
+The source used does not provide release months or days.
 
-#### Dimensão tipo de título — `dim_title_type`
+#### Title Type Dimension — `dim_title_type`
 
-Granularidade: um registo por tipo de título da fonte. Atualmente contém 13 membros.
+Grain: one record per source title type. It currently contains 13 members.
 
-| Atributo | Tipo lógico | Papel | Descrição |
+| Attribute | Logical type | Role | Description |
 | --- | --- | --- | --- |
-| `title_type_key` | INTEGER | PK | Chave substituta do tipo de título. |
-| `title_type` | TEXT | Atributo | Categoria original, como `movie`, `short` ou `tvEpisode`. |
+| `title_type_key` | INTEGER | PK | Surrogate key for the title type. |
+| `title_type` | TEXT | Attribute | Original category, such as `movie`, `short`, or `tvEpisode`. |
 
-#### Dimensão combinação de géneros — `dim_genre_set`
+#### Genre Combination Dimension — `dim_genre_set`
 
-Granularidade: um registo por combinação distinta de géneros, após ordenação e
-remoção de repetições. Atualmente contém 2 244 membros, incluindo o membro
-`Unknown` para géneros desconhecidos.
+Grain: one record per distinct genre combination after sorting and removing
+duplicates. It currently contains 2,244 members, including the `Unknown` member
+for unknown genres.
 
-| Atributo | Tipo lógico | Papel | Descrição |
+| Attribute | Logical type | Role | Description |
 | --- | --- | --- | --- |
-| `genre_set_key` | INTEGER | PK | Chave substituta da combinação. |
-| `genre_set` | TEXT | Atributo | Lista normalizada de géneros, como `Comedy,Romance`, ou `Unknown`. |
+| `genre_set_key` | INTEGER | PK | Surrogate key for the combination. |
+| `genre_set` | TEXT | Attribute | Normalised genre list, such as `Comedy,Romance`, or `Unknown`. |
 
-Cada título pertence a uma única combinação. Uma análise por `Comedy,Romance`
-refere-se a essa combinação exata, e não a todos os títulos de comédia ou romance.
+Each title belongs to exactly one combination. Analysis of `Comedy,Romance`
+refers to that exact combination, rather than all comedy or romance titles.
 
-#### Dimensão sinalização de conteúdo adulto — `dim_audience`
+#### Adult Content Flag Dimension — `dim_audience`
 
-Granularidade: um registo por valor interpretado de `isAdult`. Atualmente
-contém dois membros observados; o processo também prevê o membro `Unknown`.
+Grain: one record per interpreted value of `isAdult`. It currently contains
+two observed members; the process also supports an `Unknown` member.
 
-| Atributo | Tipo lógico | Papel | Descrição |
+| Attribute | Logical type | Role | Description |
 | --- | --- | --- | --- |
-| `audience_key` | INTEGER | PK | Chave substituta da classificação. |
-| `audience` | TEXT | Atributo | `Not adult-flagged`, `Adult-flagged` ou `Unknown`. |
+| `audience_key` | INTEGER | PK | Surrogate key for the classification. |
+| `audience` | TEXT | Attribute | `Not adult-flagged`, `Adult-flagged`, or `Unknown`. |
 
-Este indicador não é uma classificação etária e não permite concluir que um
-título sem sinalização é adequado a crianças.
+This indicator is not an age rating and does not establish that an unflagged
+title is suitable for children.
 
-### 2.3. Dicionário de factos
+### 2.3. Fact Dictionary
 
-#### Factos de lançamentos — `fact_title_release`
+#### Release Facts — `fact_title_release`
 
-Granularidade: um registo por título da fonte com ano elegível. A chave lógica
-proposta é `title_id`, correspondente a `tconst`. A unicidade deve ser imposta
-na importação para a base de dados; o script atual não a verifica explicitamente.
+Grain: one record per source title with an eligible year. The proposed logical
+key is `title_id`, corresponding to `tconst`. Uniqueness must be enforced when
+importing into the database; the current script does not explicitly check it.
 
-| Atributo | Tipo lógico | Papel | Descrição / agregação |
+| Attribute | Logical type | Role | Description / aggregation |
 | --- | --- | --- | --- |
-| `title_id` | TEXT | PK proposta | Identificador do título no IMDb. |
-| `primary_title` | TEXT | Descritivo | Nome principal do título; não é único. |
-| `year_key` | INTEGER | FK → `dim_year` | Ano de lançamento/início. |
-| `title_type_key` | INTEGER | FK → `dim_title_type` | Tipo do título. |
-| `genre_set_key` | INTEGER | FK → `dim_genre_set` | Combinação de géneros. |
-| `audience_key` | INTEGER | FK → `dim_audience` | Sinalização de conteúdo adulto. |
-| `title_count` | INTEGER | Medida aditiva | Valor 1 por registo; agregação por soma. |
-| `runtime_minutes` | BIGINT | Medida aditiva | Duração conhecida e positiva, em minutos; zero quando desconhecida/inválida. |
-| `runtime_known_count` | INTEGER | Medida aditiva | Valor 1 quando existe duração positiva válida e 0 caso contrário. |
+| `title_id` | TEXT | Proposed PK | IMDb title identifier. |
+| `primary_title` | TEXT | Descriptive | Main title name; not unique. |
+| `year_key` | INTEGER | FK → `dim_year` | Release/start year. |
+| `title_type_key` | INTEGER | FK → `dim_title_type` | Title type. |
+| `genre_set_key` | INTEGER | FK → `dim_genre_set` | Genre combination. |
+| `audience_key` | INTEGER | FK → `dim_audience` | Adult content flag. |
+| `title_count` | INTEGER | Additive measure | Value of 1 per record; aggregated by summation. |
+| `runtime_minutes` | BIGINT | Additive measure | Known positive runtime in minutes; zero when unknown or invalid. |
+| `runtime_known_count` | INTEGER | Additive measure | Value of 1 when valid positive runtime exists, and 0 otherwise. |
 
-O identificador funciona como dimensão degenerada: permite identificar o
-título sem criar uma dimensão adicional com milhões de membros. O nome é
-mantido como atributo descritivo na tabela de detalhe.
+The identifier acts as a degenerate dimension: it identifies the title without
+creating an additional dimension containing millions of members. The name is
+retained as a descriptive attribute in the detail fact table.
 
-A duração média conhecida é uma medida derivada **não aditiva**:
+Average known runtime is a derived **non-additive** measure:
 
 ```text
-duração média conhecida = SUM(runtime_minutes) / SUM(runtime_known_count)
+average known runtime = SUM(runtime_minutes) / SUM(runtime_known_count)
 ```
 
-Deve usar-se divisão decimal e devolver um valor nulo quando o denominador é
-zero. As médias de grupos não devem ser somadas nem calculadas por média
-simples de médias; recalculam-se a partir dos totais e das contagens.
+Use decimal division and return null when the denominator is zero. Group
+averages must not be summed or combined using an unweighted average of
+averages; they must be recalculated from totals and counts.
 
-#### Factos de catálogo acumulado — `fact_year_end_catalog`
+#### Cumulative Catalog Facts — `fact_year_end_catalog`
 
-Granularidade: um registo por ano de referência × tipo de título × combinação
-de géneros × sinalização de conteúdo adulto. A chave primária lógica é a
-combinação das quatro chaves estrangeiras.
+Grain: one record per reference year × title type × genre combination × adult
+content flag. The logical primary key combines the four foreign keys.
 
-| Atributo | Tipo lógico | Papel | Descrição / agregação |
+| Attribute | Logical type | Role | Description / aggregation |
 | --- | --- | --- | --- |
-| `year_key` | INTEGER | PK parcial; FK → `dim_year` | Ano de referência do snapshot. |
-| `title_type_key` | INTEGER | PK parcial; FK → `dim_title_type` | Tipo dos títulos acumulados. |
-| `genre_set_key` | INTEGER | PK parcial; FK → `dim_genre_set` | Combinação de géneros. |
-| `audience_key` | INTEGER | PK parcial; FK → `dim_audience` | Sinalização de conteúdo adulto. |
-| `catalog_title_count` | BIGINT | Medida semi-aditiva | Quantidade acumulada de títulos com ano de lançamento/início até ao ano de referência. |
-| `catalog_runtime_minutes` | BIGINT | Medida semi-aditiva | Soma acumulada das durações conhecidas desses títulos. |
+| `year_key` | INTEGER | PK component; FK → `dim_year` | Snapshot reference year. |
+| `title_type_key` | INTEGER | PK component; FK → `dim_title_type` | Type of the accumulated titles. |
+| `genre_set_key` | INTEGER | PK component; FK → `dim_genre_set` | Genre combination. |
+| `audience_key` | INTEGER | PK component; FK → `dim_audience` | Adult content flag. |
+| `catalog_title_count` | BIGINT | Semi-additive measure | Cumulative number of titles with a release/start year up to the reference year. |
+| `catalog_runtime_minutes` | BIGINT | Semi-additive measure | Cumulative sum of the known runtimes of those titles. |
 
-As duas medidas podem ser somadas entre tipos, combinações de géneros e
-classificações num mesmo ano. Não devem ser somadas entre anos, porque um título
-volta a estar incluído nos snapshots seguintes. Para obter o catálogo no final
-de um período, seleciona-se o snapshot do último ano desse período.
+Both measures can be summed across types, genre combinations, and
+classifications within the same year. They must not be summed across years,
+since a title is included again in subsequent snapshots. To obtain the catalog
+at the end of a period, select the snapshot for that period's final year.
 
-## 3. Modelo dimensional explicado
+## 3. Dimensional Data Model Explained
 
-### 3.1. Estrutura e relações
+### 3.1. Structure and Relationships
 
-O modelo é uma **constelação de factos**, formada por duas estrelas que
-partilham quatro dimensões. Cada linha de factos referencia exatamente um
-membro de cada dimensão. Cada membro pode estar associado a zero ou várias
-linhas em cada tabela de factos.
+The model is a **fact constellation**, consisting of two stars sharing four
+dimensions. Each fact row references exactly one member of each dimension.
+Each dimension member can be associated with zero or more rows in each fact table.
 
 ```mermaid
 erDiagram
-    dim_year ||--o{ fact_title_release : "ano de lançamento"
-    dim_title_type ||--o{ fact_title_release : "tipo"
-    dim_genre_set ||--o{ fact_title_release : "combinação"
-    dim_audience ||--o{ fact_title_release : "sinalização"
-    dim_year ||--o{ fact_year_end_catalog : "ano do snapshot"
-    dim_title_type ||--o{ fact_year_end_catalog : "tipo"
-    dim_genre_set ||--o{ fact_year_end_catalog : "combinação"
-    dim_audience ||--o{ fact_year_end_catalog : "sinalização"
+    dim_year ||--o{ fact_title_release : "release year"
+    dim_title_type ||--o{ fact_title_release : "type"
+    dim_genre_set ||--o{ fact_title_release : "combination"
+    dim_audience ||--o{ fact_title_release : "flag"
+    dim_year ||--o{ fact_year_end_catalog : "snapshot year"
+    dim_title_type ||--o{ fact_year_end_catalog : "type"
+    dim_genre_set ||--o{ fact_year_end_catalog : "combination"
+    dim_audience ||--o{ fact_year_end_catalog : "flag"
 
     dim_year {
         int year_key PK
@@ -264,114 +262,112 @@ erDiagram
     }
 ```
 
-O diagrama representa o modelo relacional proposto. Nesta fase, a implementação
-consiste em ficheiros CSV, não em tabelas de base de dados com restrições ativas.
+The diagram represents the proposed relational model. At this stage, the
+implementation consists of CSV files rather than database tables with active
+constraints.
 
-### 3.2. Justificação das decisões
+### 3.2. Rationale for Design Decisions
 
-**Separação dos dois processos.** A tabela de lançamentos responde a perguntas
-sobre o que foi lançado num ano. A tabela de snapshots responde a perguntas
-sobre o que já tinha sido lançado até esse ano. A separação torna explícitas
-as diferentes granularidades e regras de agregação.
+**Separating the two processes.** The release fact table answers questions
+about what was released in a given year. The snapshot fact table answers
+questions about what had already been released by that year. Separating them
+makes their different grains and aggregation rules explicit.
 
-**Dimensões conformadas.** As mesmas chaves e descrições são usadas nos dois
-processos, permitindo comparar atividade anual e catálogo acumulado com os
-mesmos filtros. Não existe uma relação direta entre as tabelas de factos.
-Uma comparação entre elas exige agregar primeiro cada tabela à granularidade
-comum pretendida, evitando a multiplicação de linhas numa junção direta.
+**Conformed dimensions.** Both processes use the same keys and descriptions,
+allowing annual activity and the cumulative catalog to be compared using the
+same filters. There is no direct relationship between the fact tables.
+Comparing them requires first aggregating each table to the desired common
+grain, avoiding row multiplication caused by a direct join.
 
-**Combinações de géneros.** A fonte permite vários géneros por título.
-Representar cada combinação como um membro único mantém categorias disjuntas
-e preserva a aditividade das contagens. Uma futura análise por género individual
-exigiria uma ponte título–género e regras explícitas para contagem distinta ou
-repartição das medidas.
+**Genre combinations.** The source allows multiple genres per title.
+Representing each combination as a single member maintains disjoint categories
+and preserves count additivity. Future analysis by individual genre would
+require a title–genre bridge and explicit rules for distinct counting or
+measure allocation.
 
-**Precisão temporal anual.** Como apenas se utiliza o ano de início/lançamento,
-a dimensão temporal tem granularidade anual. A data de 31 de dezembro identifica
-a referência do snapshot e não uma data real de lançamento.
+**Annual temporal precision.** Since only the release/start year is used, the
+time dimension has an annual grain. The 31 December date identifies the
+snapshot reference date rather than an actual release date.
 
-**Duração desconhecida.** Os valores desconhecidos, não numéricos ou não
-positivos contribuem com zero para a soma da duração e com zero para
-`runtime_known_count`. Este zero é uma convenção de agregação; não significa
-que o título tenha duração real de zero minutos.
+**Unknown runtime.** Unknown, non-numeric, or non-positive values contribute
+zero to total runtime and zero to `runtime_known_count`. This zero is an
+aggregation convention; it does not mean that the title actually lasts zero minutes.
 
-### 3.3. Construção e interpretação dos snapshots
+### 3.3. Snapshot Construction and Interpretation
 
-Para cada combinação de categorias, o processo acumula as medidas dos títulos
-com ano de lançamento/início até ao ano do snapshot:
+For each category combination, the process accumulates measures for titles
+whose release/start year is no later than the snapshot year:
 
 ```text
-catalog_title_count(ano, categorias)
-    = soma de title_count para os mesmos grupos e release_year <= ano
+catalog_title_count(year, categories)
+    = sum of title_count for the same groups where release_year <= year
 
-catalog_runtime_minutes(ano, categorias)
-    = soma de runtime_minutes para os mesmos grupos e release_year <= ano
+catalog_runtime_minutes(year, categories)
+    = sum of runtime_minutes for the same groups where release_year <= year
 ```
 
-Depois da primeira ocorrência de uma combinação, é emitido um snapshot para
-todos os anos seguintes até ao limite, mesmo sem novos lançamentos.
-Combinações ainda não observadas são omitidas e correspondem a zero.
+After a combination first appears, a snapshot is produced for every subsequent
+year up to the cutoff, even when there are no new releases. Combinations not
+yet observed are omitted and correspond to zero.
 
-Exemplo ilustrativo: se uma categoria tiver 10 títulos lançados até 2020 e
-mais 3 em 2021, os snapshots apresentam 10 e 13. Somar 10 + 13 não representa
-23 títulos distintos: conta novamente os 10 títulos anteriores. O catálogo
-acumulado em 2021 é 13.
+For example, if a category has 10 titles released by 2020 and another 3 in
+2021, its snapshots contain 10 and 13. Adding 10 + 13 does not represent 23
+distinct titles: it counts the earlier 10 titles again. The cumulative catalog
+in 2021 contains 13 titles.
 
-### 3.4. Limitações analíticas
+### 3.4. Analytical Limitations
 
-- Os snapshots são reconstruídos a partir da extração atual: não demonstram
-  quais os títulos que constavam do IMDb em cada ano histórico.
-- Um título lançado continua no catálogo acumulado. `endYear` não é usado
-  como data de remoção, pois o fim de uma série não elimina o seu título.
-- A cobertura depende da extração e dos anos conhecidos. As contagens não
-  demonstram a totalidade da produção audiovisual mundial.
-- O ano de 2026 está incompleto e a extração não prova que todos os títulos
-  com esse ano já tenham sido efetivamente lançados à data de elaboração.
-- Filmes, séries e episódios são entidades distintas na fonte. Para análises
-  específicas devem aplicar-se filtros por tipo. A soma de durações entre
-  séries e episódios não representa necessariamente minutos de conteúdo único.
-- A sinalização de conteúdo adulto não substitui uma classificação etária.
+- Snapshots are reconstructed from the current extract: they do not show which
+  titles were present in IMDb in each historical year.
+- A released title remains in the cumulative catalog. `endYear` is not used as
+  a removal date, because the end of a series does not remove its title.
+- Coverage depends on the extract and on known years. Counts do not establish
+  the total volume of worldwide audiovisual production.
+- The year 2026 is incomplete, and the extract does not establish that all
+  titles assigned to that year had actually been released by the preparation date.
+- Movies, series, and episodes are distinct entities in the source. Specific
+  analyses should filter by type. Summing runtimes across series and episodes
+  does not necessarily represent minutes of unique content.
+- The adult content flag does not replace an age rating.
 
-## 4. Transformação, execução e validação
+## 4. Transformation, Execution, and Validation
 
-O script [refine_dataset.py](refine_dataset.py) utiliza apenas a biblioteca
-padrão do Python e preserva o ficheiro de origem. O processo:
+The [refine_dataset.py](refine_dataset.py) script uses only Python's standard
+library and preserves the source file. The process:
 
-1. Lê `data.tsv` e seleciona os registos com ano elegível.
-2. Normaliza as combinações de géneros e interpreta o indicador de conteúdo adulto.
-3. Atribui chaves às categorias e escreve os factos de lançamentos.
-4. Gera as quatro dimensões partilhadas.
-5. Acumula as medidas por ano e categorias e escreve os snapshots.
-6. Verifica o limiar de factos e a reconciliação dos totais finais, gerando o relatório.
+1. Reads `data.tsv` and selects records with eligible years.
+2. Normalises genre combinations and interprets the adult content flag.
+3. Assigns category keys and writes release facts.
+4. Generates the four shared dimensions.
+5. Accumulates measures by year and category and writes snapshots.
+6. Checks the fact count threshold and reconciles final totals, generating the report.
 
-Execução em PowerShell, a partir da pasta do projeto:
+Run in PowerShell from the project directory:
 
 ```powershell
-# Reproduzir o limite da versão atual
+# Reproduce the current version's cutoff
 .\venv\Scripts\python.exe refine_dataset.py --cutoff-year 2026
 
-# Alternativa para trabalhar apenas com anos civis completos
+# Alternative using only complete calendar years
 .\venv\Scripts\python.exe refine_dataset.py --cutoff-year 2025
 ```
 
-A execução substitui os ficheiros gerados em `refined/`. Para preservar uma
-versão, pode usar-se outra pasta com `--output refined_2025`.
+Execution replaces the generated files in `refined/`. To preserve a version,
+use another directory with `--output refined_2025`.
 
-| Ficheiro gerado | Conteúdo |
+| Generated file | Contents |
 | --- | --- |
-| `dim_year.csv` | Dimensão temporal. |
-| `dim_title_type.csv` | Tipos de título. |
-| `dim_genre_set.csv` | Combinações de géneros. |
-| `dim_audience.csv` | Sinalização de conteúdo adulto. |
-| `fact_title_release.csv` | Factos por título. |
-| `fact_year_end_catalog.csv` | Snapshots anuais acumulados. |
-| `validation_report.json` | Contagens, exclusões e totais de controlo. |
+| `dim_year.csv` | Time dimension. |
+| `dim_title_type.csv` | Title types. |
+| `dim_genre_set.csv` | Genre combinations. |
+| `dim_audience.csv` | Adult content flags. |
+| `fact_title_release.csv` | Facts per title. |
+| `fact_year_end_catalog.csv` | Annual cumulative snapshots. |
+| `validation_report.json` | Counts, exclusions, and control totals. |
 
-O script verifica que existem mais de 10 000 factos de lançamentos e que as
-somas do último snapshot coincidem com o total de títulos e a duração conhecida
-da tabela de lançamentos. Estas verificações não substituem a validação de
-unicidade e integridade referencial na futura importação para uma base de dados.
-As chaves substitutas dependem da ordem de leitura da fonte; dimensões e factos
-devem ser carregados em conjunto a partir da mesma execução.
-
-
+The script checks that there are more than 10,000 release facts and that the
+sums in the final snapshot match the total title count and known runtime in
+the release fact table. These checks do not replace uniqueness and referential
+integrity validation when importing into a database. Surrogate keys depend on
+the source reading order; dimensions and facts must be loaded together from
+the same execution.
