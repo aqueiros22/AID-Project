@@ -7,6 +7,13 @@ For **Section 5**, the following analytical questions are appropriate for the di
 - How does the average known runtime vary by title type and decade?
 - How has the composition of the cumulative catalog changed over time?
 - What percentage of titles have missing runtime information?
+- How has the annual number of title releases changed over time?
+- Which decades recorded the highest number of releases?
+- Which title types experienced the largest year-over-year increase in releases?
+- How has the proportion of movies, TV series, and TV episodes changed over time?
+- What are the most frequent genre combinations for each title type?
+- How have the leading genre combinations changed across decades?
+- Which title types have the highest proportion of adult-flagged titles?
 
 The analysis should distinguish between **observed results** and possible explanations. For example, an increase in recorded titles may reflect changes in dataset coverage rather than solely an increase in audiovisual production.
 
