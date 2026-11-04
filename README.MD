@@ -443,3 +443,68 @@ Querying `fact_title_release` with `dim_genre_set` for theatrical movies (`movie
 -   **Interpretation:** While it might initially appear that documentaries are the second most produced film genre in history—outnumbering comedies by more than two to one—this ranking is heavily influenced by **combinatorial fragmentation**. Because our dimensional model treats each exact combination of genres as a mutually exclusive member in `dim_genre_set` (to preserve strict count additivity without a many-to-many bridge table), genres that rarely mix with others—such as `'Documentary'`—remain concentrated under a single dimension key. Conversely, highly hybrid genres like *Comedy*, *Action*, or *Adventure* are co-tagged with multiple sub-genres (`'Action,Adventure,Sci-Fi'`, `'Comedy,Drama'`, `'Comedy,Romance'`), splintering their true total volume across hundreds of distinct dimension members.
 
 ![Top 5 Exact Genre Sets for Movies](media/5_top_movie_genres.png)
+
+## 6. Critical Reflection: Dimensional Model vs. the Operational Source
+
+The only source available to the project is `data.tsv`, a flat extract of IMDb title metadata. No assumption is made about how IMDb stores its data internally: the comparison is between the dimensional model built in this project and the extract it was built from, which plays the role of the operational data.
+
+### 6.1. Comparison with the Source Extract
+
+| Aspect | Source extract (`data.tsv`) | Dimensional model |
+| --- | --- | --- |
+| Structure | One flat table with 7,697,093 records and nine text fields. | Two fact tables and four conformed dimensions, with integer keys. |
+| Measures | Only `runtimeMinutes`, stored as text with `\N` for unknown values. | Additive and semi-additive measures with explicit aggregation rules. |
+| Unknown values | Encoded as `\N` and handled differently by each query. | Handled once in the ETL: `Unknown` members and `runtime_known_count`. |
+| Genres | One comma-separated string per title. | One normalised combination per title in `dim_genre_set`. |
+| Cumulative catalog | Must be recomputed from all titles in every query. | Precomputed in `fact_year_end_catalog`. |
+| Integrity | None; the file is plain text. | Keys and foreign keys defined in the model, enforced when loaded into a database. |
+
+### 6.2. Advantages of the Dimensional Model
+
+**Consistent and standardised measures.** Each measure is defined once, together with the way it can be aggregated. `title_count` and `runtime_minutes` are additive, `catalog_title_count` and `catalog_runtime_minutes` are semi-additive, and the average runtime is derived as `SUM(runtime_minutes) / SUM(runtime_known_count)`. The role of `runtime_known_count` is shown by Query 4: 82.7% of `tvEpisode` titles and 99.3% of `videoGame` titles have no runtime, so an average divided by the total number of rows would be severely distorted. In the model, the correct denominator is part of the design instead of depending on each analyst.
+
+**Shared dimensions across fact tables.** Both fact tables use the same year, title type, genre combination and adult content flag, with the same keys and meaning. Annual releases and the cumulative catalog can be filtered in the same way, as in Queries 1 and 2, which compare movies and TV series, provided that each fact table is first aggregated to the common grain.
+
+**Simpler analytical queries and reporting.** Every query in Section 5 is a join between one fact table and one to three small dimensions, followed by a `GROUP BY`. In the source extract, the same questions would require parsing the file, converting `\N` values, splitting the genre string and, for catalog size, calculating a running total over millions of titles. Query 2 is a clear example: the cumulative catalog of movies and TV series at the end of each decade is a filtered sum over `fact_year_end_catalog`, which has 402,194 records instead of the 6,901,413 of the release table.
+
+**Visible data quality.** Because unknown values are handled explicitly, the model makes the gaps of the source measurable instead of hiding them, as Query 4 shows.
+
+**Separation of processes.** Releases in a year and the catalog accumulated by that year have different grains and aggregation rules. Keeping them in separate fact tables prevents the common mistake of adding snapshot measures across years.
+
+### 6.3. Limitations
+
+**Additional storage for snapshots.** `fact_year_end_catalog` repeats information already contained in `fact_title_release`: a title is counted again in every later snapshot of its category. This redundancy is the price of fast cumulative queries, and it grows with the number of years and category combinations.
+
+**Maintenance of the ETL process.** The model depends on `refine_dataset.py`. Each new extract requires running it again, and surrogate keys depend on the order in which the source is read, so dimensions and facts must always be loaded together from the same execution. The cutoff year must also be managed, since the current year is incomplete. CSV files do not enforce primary keys, uniqueness of `title_id` or referential integrity; these checks must be added when the data is loaded into a database.
+
+**Loss of attributes from the original dataset.** The model keeps only what the four dimensions and the measures need. `originalTitle` and `endYear` are not used, and 795,680 records without a valid start year are excluded. The extract does not contain ratings, votes, people, regions or viewing figures, so the model cannot answer questions about popularity, audiences or revenue.
+
+**Limited flexibility when analysing individual genres.** Representing each exact genre combination as one member of `dim_genre_set` (2,244 members) keeps categories disjoint and counts additive, but fragments genres that are often combined. Query 5 shows the effect: `Documentary` ranks second among movies partly because it is rarely combined with other genres, while `Comedy` or `Action` are split across many combinations. Analysis by individual genre would require a titleâ€“genre bridge table and explicit rules for distinct counts or allocation of measures, which would complicate the current additive design.
+
+**Reconstructed snapshots.** Snapshots are calculated from the current extract, so they do not show which titles IMDb contained at each historical date. Part of the growth they show, such as the catalog of TV series from ~94,000 titles in 2010 to over 187,000 in 2020, reflects better coverage of recent titles and not only real production.
+
+**Annual time granularity.** The source provides only the release or start year, so months and days cannot be analysed, and the `31 December` snapshot date is a convention.
+
+**Interpretation risks.** Movies, series and episodes are distinct entities, so adding their runtimes does not measure unique content. The adult content flag is not an age rating, and semi-additive measures can still be misused by users who do not know the rule.
+
+### 6.4. Overall Assessment
+
+For the analytical questions of this project (volume, composition, runtime and cumulative size of the catalog by title type, genre combination and adult content flag), the dimensional model is preferable to querying the source extract directly: measures are consistent, queries are shorter, and data quality is explicit. Its costs are redundant storage, ETL maintenance and the loss of detail not captured by the chosen dimensions. It does not replace the source: questions about individual genres, people, ratings or the real historical state of the catalog require a richer model or additional data.
+
+## 7. Conclusion
+
+This project designed and implemented a dimensional model for an IMDb title-metadata extract. The model is a fact constellation with two fact tables: `fact_title_release`, with 6,901,413 records and the additive measures `title_count`, `runtime_minutes` and `runtime_known_count`; and `fact_year_end_catalog`, with 402,194 records and the semi-additive measures `catalog_title_count` and `catalog_runtime_minutes`. Both share four conformed dimensions: year, title type, genre combination and adult content flag. This satisfies the assignment requirements: more than 10,000 facts, at least one additive and one semi-additive measure, and at least four dimensions, one of them temporal, shared by both kinds of facts.
+
+The `refine_dataset.py` script builds the model reproducibly from the source and validates it with control totals. Five analytical queries, executed on an in-memory SQLite database loaded from the generated files, show how the model is used:
+
+- **Query 1:** the average runtime of movies is stable across recent decades, while that of TV series decreases.
+- **Query 2:** the cumulative catalog grows strongly, with TV series nearly doubling between 2010 and 2020.
+- **Query 3:** adult-flagged content moves from theatrical movies to home video and then to TV episodes.
+- **Query 4:** some title types, mainly `tvEpisode` and `videoGame`, lack runtime in most records.
+- **Query 5:** exact genre combinations fragment hybrid genres and favour those that are rarely combined.
+
+In each case, observed results were separated from possible explanations, because an increase in recorded titles may reflect changes in dataset coverage rather than an increase in audiovisual production.
+
+The main conclusions are methodological. Declaring the grain and the aggregation rule of each measure avoids errors such as averaging averages or adding snapshots across years. Design decisions have analytical consequences: using genre combinations as a dimension simplifies counting but alters genre rankings. A warehouse built from a single extract inherits its limits, since its snapshots are reconstructed rather than observed and its coverage is uneven over time.
+
+Future work could include loading the model into a relational database with enforced keys and constraints, adding a titleâ€“genre bridge table for individual genre analysis, regenerating the dataset with only complete calendar years (`--cutoff-year 2025`), and incorporating dated extracts so that snapshots reflect the actual state of the source at each point in time.
