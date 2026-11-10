@@ -63,6 +63,17 @@ the annual snapshot's year is a reference year, not the individual series end.
 
 Since the data source is a TSV extract, avoid making assumptions about the internal operational database architecture of IMDb.
 
+For source selection and ETL, state that the dataset was provided by the course
+professor. Justify its suitability through title identifiers, temporal fields,
+descriptive categories and sufficient volume. Distinguish manual acquisition
+from automated TSV extraction, transformation and SQLite loading. Do not invent
+an original extraction date, version or licence. Cite the generated source hash
+and size for reproducibility, and report missing/invalid start years, years
+outside the cutoff, missing/invalid runtimes and unknown categories separately.
+Transformation validates staged files before publication and rolls back ordinary
+publication errors; loading publishes a validated database by atomic replacement.
+Neither incremental refreshes nor historical source observations are implemented.
+
 The implemented warehouse is `data/warehouse/warehouse.db`, created by `scripts/build_warehouse.py`
 using `sql/warehouse_schema.sql`. CSVs are intermediate ETL files. Queries open the
 existing database directly; they do not rebuild an in-memory database. The loader

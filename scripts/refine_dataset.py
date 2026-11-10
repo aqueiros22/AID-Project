@@ -1,7 +1,10 @@
 """Build title releases and annual series interval-information snapshots."""
 import argparse
 import csv
+import hashlib
 import json
+import os
+import tempfile
 from collections import Counter, defaultdict
 from pathlib import Path
 from scripts.paths import RAW_DATA, REFINED
@@ -11,6 +14,38 @@ SERIES_TYPES = frozenset({'tvSeries', 'tvMiniSeries'})
 
 
 def build(source, output, cutoff, *, minimum_release_facts=10001):
+    """Validate staged outputs before publishing; roll back publication errors."""
+    source, output = Path(source), Path(output)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix='.refine-', dir=output.parent) as temporary:
+        staging = Path(temporary) / 'next'
+        report = _build(source, staging, cutoff, minimum_release_facts=minimum_release_facts)
+        output.mkdir(parents=True, exist_ok=True)
+        backup = Path(temporary) / 'previous'
+        backup.mkdir()
+        published, saved = [], []
+        try:
+            for path in sorted(staging.iterdir()):
+                destination = output / path.name
+                if destination.exists():
+                    os.replace(destination, backup / path.name)
+                    saved.append(path.name)
+                os.replace(path, destination)
+                published.append(path.name)
+            legacy = output / 'fact_year_end_catalog.csv'
+            if legacy.exists():
+                os.replace(legacy, backup / legacy.name)
+                saved.append(legacy.name)
+        except Exception:
+            for name in published:
+                (output / name).unlink()
+            for name in saved:
+                os.replace(backup / name, output / name)
+            raise
+    return report
+
+
+def _build(source, output, cutoff, *, minimum_release_facts=10001):
     if not 1 <= cutoff <= 9999:
         raise ValueError('Cutoff year must be between 1 and 9999')
     output.mkdir(parents=True, exist_ok=True)
@@ -19,6 +54,9 @@ def build(source, output, cutoff, *, minimum_release_facts=10001):
     events = defaultdict(lambda: defaultdict(lambda: [0, 0]))
     counts = Counter()
     for name in (
+        'excluded_missing_start_year', 'excluded_invalid_start_year',
+        'excluded_outside_cutoff_year', 'missing_runtime_facts',
+        'invalid_runtime_facts', 'unknown_genre_facts', 'unknown_audience_facts',
         'series_candidates', 'series_with_known_end', 'series_with_unknown_end',
         'series_excluded_invalid_end_year', 'series_known_end_after_cutoff',
         'snapshot_facts', 'known_end_series_years', 'unknown_end_series_years',
@@ -40,18 +78,34 @@ def build(source, output, cutoff, *, minimum_release_facts=10001):
 
     with source.open(encoding='utf-8', newline='') as raw, (output / 'fact_title_release.csv').open('w', encoding='utf-8', newline='') as target:
         facts = writer(target, ['title_id', 'primary_title', 'year_key', 'title_type_key', 'genre_set_key', 'audience_key', 'title_count', 'runtime_minutes', 'runtime_known_count'])
-        for row in csv.DictReader(raw, delimiter='\t', quoting=csv.QUOTE_NONE):
+        reader = csv.DictReader(raw, delimiter='\t', quoting=csv.QUOTE_NONE)
+        required = {'tconst', 'titleType', 'primaryTitle', 'isAdult', 'startYear',
+                    'endYear', 'runtimeMinutes', 'genres'}
+        if not required.issubset(reader.fieldnames or []):
+            raise ValueError('Source TSV is missing required columns')
+        for row in reader:
+            if None in row or any(value is None for value in row.values()):
+                raise ValueError(f'Malformed TSV record at line {reader.line_num}')
             counts['source_rows'] += 1
-            year = row['startYear']
+            year = row['startYear'].strip()
             if not year.isdigit() or not 1 <= int(year) <= cutoff:
                 counts['excluded_unknown_or_outside_cutoff_year'] += 1
+                reason = ('missing_start_year' if year in ('\\N', '') else
+                          'invalid_start_year' if not year.isdigit() else
+                          'outside_cutoff_year')
+                counts[f'excluded_{reason}'] += 1
                 continue
             year = int(year)
-            genre = ','.join(sorted(set(row['genres'].split(',')))) if row['genres'] != '\\N' else 'Unknown'
+            genre = ','.join(sorted({value.strip() for value in row['genres'].split(',')
+                                     if value.strip() not in ('', '\\N')})) or 'Unknown'
             audience = {'0': 'Not adult-flagged', '1': 'Adult-flagged'}.get(row['isAdult'], 'Unknown')
+            counts['unknown_genre_facts'] += int(genre == 'Unknown')
+            counts['unknown_audience_facts'] += int(audience == 'Unknown')
             keys = (key('title_type', row['titleType']), key('genre_set', genre), key('audience', audience))
-            runtime = row['runtimeMinutes']
+            runtime = row['runtimeMinutes'].strip()
             known = runtime.isdigit() and int(runtime) > 0
+            if not known:
+                counts['missing_runtime_facts' if runtime in ('\\N', '') else 'invalid_runtime_facts'] += 1
             minutes = int(runtime) if known else 0
             facts.writerow([row['tconst'], row['primaryTitle'], year, *keys, 1, minutes, int(known)])
             years.add(year)
@@ -136,7 +190,17 @@ def build(source, output, cutoff, *, minimum_release_facts=10001):
         if sum(value[index] for value in running.values()) != counts[f'{prefix}_series_at_cutoff']:
             raise ValueError(f'{prefix}: final snapshot does not match source intervals')
     report = dict(counts)
+    with source.open('rb') as handle:
+        source_sha256 = hashlib.file_digest(handle, 'sha256').hexdigest()
     report.update(
+        source_provenance={
+            'provided_by': 'Course professor',
+            'source_file': str(source.resolve()),
+            'sha256': source_sha256,
+            'size_bytes': source.stat().st_size,
+            'original_extraction_date': None,
+            'extract_version': None,
+        },
         cutoff_year=cutoff, first_year=min(years),
         dimension_members={name: len(values) for name, values in dimensions.items()},
         year_members=cutoff - min(years) + 1,

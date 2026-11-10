@@ -2,9 +2,12 @@
 import contextlib
 import csv
 import io
+import hashlib
+import os
 import sqlite3
 import tempfile
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 from scripts.refine_dataset import build
@@ -119,6 +122,54 @@ class SeriesSnapshotTests(unittest.TestCase):
         for cutoff in (0, 10000):
             with self.subTest(cutoff=cutoff), self.assertRaisesRegex(ValueError, 'Cutoff year'):
                 self.run_build(cutoff=cutoff)
+
+    def test_quality_counters_and_source_fingerprint(self):
+        with self.source.open('a', encoding='utf-8', newline='') as handle:
+            csv.writer(handle, delimiter='\t').writerows([
+                ['tt14', 'movie', 'Missing', 'Missing', '?', '2019', '\\N', '', ''],
+                ['tt15', 'movie', 'Invalid', 'Invalid', '0', '2019', '\\N', '-5', ' Comedy,Comedy , '],
+                ['tt16', 'movie', 'Bad year', 'Bad year', '0', 'invalid', '\\N', '90', 'Drama'],
+            ])
+        report = self.run_build(minimum_release_facts=1)
+        self.assertEqual(report['excluded_missing_start_year'], 1)
+        self.assertEqual(report['excluded_invalid_start_year'], 1)
+        self.assertEqual(report['excluded_outside_cutoff_year'], 1)
+        self.assertEqual(report['missing_runtime_facts'], 1)
+        self.assertEqual(report['invalid_runtime_facts'], 1)
+        self.assertEqual(report['unknown_genre_facts'], 1)
+        self.assertEqual(report['unknown_audience_facts'], 1)
+        self.assertEqual(report['source_provenance']['sha256'],
+                         hashlib.sha256(self.source.read_bytes()).hexdigest())
+        self.assertIn('Comedy', {row['genre_set'] for row in self.rows('dim_genre_set')})
+
+    def test_failed_transformation_preserves_previous_outputs(self):
+        self.run_build(minimum_release_facts=1)
+        previous = {path.name: path.read_bytes() for path in self.output.iterdir()}
+        with self.assertRaises(ValueError):
+            self.run_build()
+        self.assertEqual(previous, {path.name: path.read_bytes() for path in self.output.iterdir()})
+
+    def test_malformed_source_is_rejected_before_publication(self):
+        self.source.write_text('tconst\tstartYear\ntt1\t2020\n', encoding='utf-8')
+        with self.assertRaisesRegex(ValueError, 'required columns'):
+            self.run_build(minimum_release_facts=1)
+        self.assertFalse(self.output.exists())
+
+    def test_publication_error_restores_previous_outputs(self):
+        self.run_build(minimum_release_facts=1)
+        (self.output / 'unrelated.txt').write_text('Keep me', encoding='utf-8')
+        previous = {path.name: path.read_bytes() for path in self.output.iterdir()}
+        replace = os.replace
+
+        def fail_publication(source, destination):
+            if Path(source).parent.name == 'next' and Path(source).name == 'dim_audience.csv':
+                raise OSError('Simulated publication failure')
+            return replace(source, destination)
+
+        with patch('scripts.refine_dataset.os.replace', side_effect=fail_publication):
+            with self.assertRaisesRegex(OSError, 'publication failure'):
+                self.run_build(minimum_release_facts=1)
+        self.assertEqual(previous, {path.name: path.read_bytes() for path in self.output.iterdir()})
 
     def test_individual_genres_preserve_combinations_and_fact_counts(self):
         with self.source.open('a', encoding='utf-8', newline='') as handle:

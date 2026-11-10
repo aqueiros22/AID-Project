@@ -1,6 +1,7 @@
 ﻿# Dimensional Analysis of IMDb Audiovisual Titles
 
-Download the project dataset from [Google Drive](https://drive.google.com/file/d/1vTW1wmApo5b8ZvQGzIOJ8E2XF4GIFgJc/view?usp=sharing).
+The project dataset was provided by the course professor and is available from
+[Google Drive](https://drive.google.com/file/d/1vTW1wmApo5b8ZvQGzIOJ8E2XF4GIFgJc/view?usp=sharing).
 
 The implemented warehouse is the persistent local SQLite file `data/warehouse/warehouse.db`.
 Its schema is defined in [sql/warehouse_schema.sql](sql/warehouse_schema.sql), with
@@ -57,14 +58,32 @@ The main analytical questions are:
 
 ### 1.2. Data Source and Scope
 
-The source is the local `data/raw/data.tsv` file, containing 7,697,093 records and the
+The source is the IMDb title metadata dataset provided by the course professor,
+stored locally as `data/raw/data.tsv`, containing 7,697,093 records and the
 fields `tconst`, `titleType`, `primaryTitle`, `originalTitle`, `isAdult`,
 `startYear`, `endYear`, `runtimeMinutes`, and `genres`.
 
 The file contains title metadata; it does not contain sales, revenue, viewing
 figures, platform availability, or ratings. Analysis therefore focuses on the
 number and characteristics of the titles present in this extract. The
-acquisition date and extract version are not recorded in the project.
+original extraction date and extract version were not recorded in the project;
+neither is inferred from the file's modification time. The ETL records the source
+file's SHA-256 hash and byte size so that subsequent runs can identify the exact
+input used.
+
+The supplied source was selected for its fit with the analytical objectives:
+title identifiers support title-level facts, dates support temporal analysis,
+and title types, genres and adult flags support shared dimensions. Its volume
+also supports the assignment's fact-count requirement. One source is sufficient
+for this scope; adding ratings or financial sources would require additional
+questions and explicit integration rules. Coverage is not assumed to represent
+all worldwide audiovisual production, and films, series and episodes must be
+distinguished when interpreting totals.
+
+Acquisition is manual: obtain the professor-provided file and place it at
+`data/raw/data.tsv`. Extraction is automated from that local TSV; the project
+does not scrape IMDb or connect to its internal database. Refreshes rerun the
+complete transformation and loading process rather than updating incrementally.
 
 Records are included when `startYear` is numeric and falls between 1 and the
 configured cutoff year. For series, this field represents the start year.
@@ -87,7 +106,14 @@ The current results, recorded in [validation_report.json](data/refined/validatio
 | Source records | 7,697,093 |
 | Release fact table records | 6,901,413 |
 | Records excluded due to unknown or out-of-range years | 795,680 |
+| Records excluded due to missing start years | 795,670 |
+| Records excluded due to malformed start years | 0 |
+| Records excluded due to numeric start years outside the range | 10 |
 | Titles with known positive runtime | 2,138,467 |
+| Eligible titles with missing runtime | 4,762,936 |
+| Eligible titles with invalid or nonpositive runtime | 10 |
+| Eligible titles with unknown genres | 539,459 |
+| Eligible titles with unknown adult content flag | 0 |
 | Total known runtime, in minutes | 94,369,177 |
 | Series snapshot fact table records | 66,301 |
 | Eligible series (`tvSeries` and `tvMiniSeries`) | 224,004 |
@@ -478,10 +504,10 @@ not what was known at each historical date.
   does not necessarily represent minutes of unique content.
 - The adult content flag does not replace an age rating.
 
-## 4. Transformation, Execution, and Validation
+## 4. Data Extraction, Transformation, Loading, and Validation
 
 The [scripts/refine_dataset.py](scripts/refine_dataset.py) script uses only Python's standard
-library and preserves the source file. The process:
+library (Python 3.11+ for source hashing) and preserves the source file. The process:
 
 1. Reads `data/raw/data.tsv` and selects records with eligible years.
 2. Normalises genre combinations and interprets the adult content flag.
@@ -526,7 +552,12 @@ python -m scripts.run_queries
 .\venv\Scripts\python.exe -m scripts.run_queries --database data/warehouse/warehouse_2025.db --no-plots
 ```
 
-The transformation replaces files in `data/refined/`; it does not update the database
+The transformation first generates and validates files in a temporary directory
+next to `data/refined/`. Failed transformation or validation leaves existing
+outputs intact. Publication replaces generated files with rollback on ordinary
+file-operation errors and preserves unrelated files. This is not an atomic
+multi-file transaction against process termination or power loss; transformation
+and loading must run sequentially. It does not update the database
 until `scripts/build_warehouse.py` is run. Queries default to `data/warehouse/warehouse.db`, with
 `--database` available for another version. The default generated database is
 ignored by Git and should be regenerated using these commands when reproducing
@@ -593,6 +624,17 @@ range. Unknown-end memberships reconcile against the number of reporting years
 from each start through the cutoff, without inferring a real end. Each final-year
 measure is checked separately. These are technical reconciliations, not distinct
 series or observed broadcast-year metrics. Invalid end years are counted separately.
+
+The validation report separates missing start years, malformed start years and
+numeric years outside the configured range. For eligible releases it separately
+counts missing and invalid/nonpositive runtimes, unknown genres and unknown adult
+flags. These quality counters describe retained facts, while start-year exclusions
+describe rejected source rows. Empty genre labels and `\\N` are treated as missing;
+genre labels are trimmed, deduplicated and sorted. Required TSV columns and record
+widths are checked before processing. Source provenance includes the professor as
+provider, the input path, byte size and SHA-256 hash. Unknown extraction dates and
+versions remain explicitly null. Reports generated before these additions must
+be regenerated to include the new fields.
 
 The synthetic tests check inclusive boundaries, unknown ends, known ends beyond
 the cutoff, invalid intervals, non-series exclusion, an empty snapshot, dimension
