@@ -7,37 +7,95 @@ from scripts.build_warehouse import open_warehouse
 from scripts.paths import MEDIA, WAREHOUSE
 
 
+# Last reference year with a meaningful volume of titles. The extract holds ~318k titles for 2020,
+# ~71k for 2021 and almost nothing afterwards, so later years are not comparable.
+LAST_COMPLETE_YEAR = 2020
+
+# Drill-across: each fact table is aggregated to the same grain (year) BEFORE being combined,
+# so there is no row multiplication. Releases are restricted to the snapshot's series types.
+SERIES_DRILL_ACROSS_SQL = """
+    WITH rel AS (
+        SELECT f.year_key, SUM(f.title_count) AS new_series
+        FROM fact_title_release f
+        JOIN dim_title_type t ON t.title_type_key = f.title_type_key
+        WHERE t.title_type IN ('tvSeries', 'tvMiniSeries')
+        GROUP BY f.year_key
+    ), snap AS (
+        SELECT year_key,
+               SUM(known_interval_series_count) AS known_intervals,
+               SUM(started_series_unknown_end_count) AS started_unknown_end
+        FROM fact_series_year_snapshot
+        GROUP BY year_key
+    )
+    SELECT y.year,
+           COALESCE(rel.new_series, 0) AS new_series,
+           COALESCE(snap.known_intervals, 0) AS known_intervals,
+           COALESCE(snap.started_unknown_end, 0) AS started_unknown_end
+    FROM dim_year y
+    LEFT JOIN rel ON rel.year_key = y.year_key
+    LEFT JOIN snap ON snap.year_key = y.year_key
+    WHERE y.year IN (1960, 1970, 1980, 1990, 2000, 2010, 2015, 2018, 2020, 2021, 2022, 2026)
+    ORDER BY y.year;
+"""
+
+# Per exact combination first, then through the bridge: a title with several genres counts
+# once in EACH of its genres (overlapping groups), while 'standalone' is the exact combination.
+GENRE_MEMBERSHIP_SQL = """
+    WITH per_set AS (
+        SELECT f.genre_set_key, SUM(f.title_count) AS n
+        FROM fact_title_release f
+        JOIN dim_title_type t ON t.title_type_key = f.title_type_key
+        WHERE t.title_type = 'movie'
+        GROUP BY f.genre_set_key
+    )
+    SELECT g.genre,
+           SUM(p.n) AS movies_with_genre,
+           SUM(CASE WHEN s.genre_set = g.genre THEN p.n ELSE 0 END) AS standalone_only,
+           ROUND(SUM(CASE WHEN s.genre_set = g.genre THEN p.n ELSE 0 END) * 100.0 / SUM(p.n), 1) AS pct_standalone
+    FROM per_set p
+    JOIN dim_genre_set s ON s.genre_set_key = p.genre_set_key
+    JOIN bridge_genre_set_genre b ON b.genre_set_key = p.genre_set_key
+    JOIN dim_genre g ON g.genre_key = b.genre_key
+    WHERE g.genre <> 'Unknown'
+    GROUP BY g.genre
+    ORDER BY movies_with_genre DESC
+    LIMIT 8;
+"""
+
+SERIES_BY_GENRE_SQL = """
+    SELECT g.genre,
+           SUM(CASE WHEN f.year_key = 2010 THEN f.known_interval_series_count ELSE 0 END) AS known_2010,
+           SUM(CASE WHEN f.year_key = 2020 THEN f.known_interval_series_count ELSE 0 END) AS known_2020,
+           SUM(CASE WHEN f.year_key = 2020 THEN f.started_series_unknown_end_count ELSE 0 END) AS unknown_end_2020
+    FROM fact_series_year_snapshot f
+    JOIN bridge_genre_set_genre b ON b.genre_set_key = f.genre_set_key
+    JOIN dim_genre g ON g.genre_key = b.genre_key
+    WHERE f.year_key IN (2010, 2020) AND g.genre <> 'Unknown'
+    GROUP BY g.genre
+    ORDER BY known_2020 DESC
+    LIMIT 8;
+"""
+
+
 def print_terminal_queries(conn: sqlite3.Connection) -> None:
     queries = {
-        "1. [Additive] Release Volume and Average Runtime Evolution (Movies vs TV Series by Decade)": """
-            SELECT 
-                y.decade, 
-                t.title_type, 
+        "1. [Additive] Release Volume and Average Known Runtime (Movies vs TV Series by Decade)": """
+            SELECT
+                y.decade,
+                t.title_type,
                 SUM(f.title_count) AS total_releases,
+                SUM(f.runtime_known_count) AS titles_with_runtime,
+                ROUND(SUM(f.runtime_known_count) * 100.0 / SUM(f.title_count), 1) AS pct_with_runtime,
                 ROUND(SUM(f.runtime_minutes) * 1.0 / SUM(f.runtime_known_count), 1) AS avg_runtime_mins
             FROM fact_title_release f
             JOIN dim_year y ON f.year_key = y.year_key
             JOIN dim_title_type t ON f.title_type_key = t.title_type_key
-            WHERE t.title_type IN ('movie', 'tvSeries') 
-              AND y.decade >= 1980 
-              AND f.runtime_known_count > 0
+            WHERE t.title_type IN ('movie', 'tvSeries')
+              AND y.decade >= 1980
             GROUP BY y.decade, t.title_type
             ORDER BY y.decade DESC, t.title_type;
         """,
-        "2. [Semi-Additive] Known Series Intervals and Started Series with Unknown End": """
-            SELECT 
-                y.year AS snapshot_year, 
-                t.title_type, 
-                SUM(c.known_interval_series_count) AS known_intervals,
-                SUM(c.started_series_unknown_end_count) AS started_unknown_end
-            FROM fact_series_year_snapshot c
-            JOIN dim_year y ON c.year_key = y.year_key
-            JOIN dim_title_type t ON c.title_type_key = t.title_type_key
-            WHERE y.year IN (1990, 2000, 2010, 2020) 
-              AND t.title_type IN ('tvSeries', 'tvMiniSeries')
-            GROUP BY y.year, t.title_type
-            ORDER BY y.year DESC, t.title_type;
-        """,
+        "2. [Drill-across] New Series (releases) vs Known Intervals vs Started with Unknown End, by Year": SERIES_DRILL_ACROSS_SQL,
         "3. [Audience x Time x Title Type] Adult-Flagged Releases Across Decades by Format": """
             SELECT 
                 y.decade,
@@ -66,22 +124,10 @@ def print_terminal_queries(conn: sqlite3.Connection) -> None:
             JOIN dim_title_type t ON f.title_type_key = t.title_type_key
             GROUP BY t.title_type
             HAVING total_titles > 10000
-            ORDER BY missing_percentage DESC
-            LIMIT 5;
+            ORDER BY missing_percentage DESC;
         """,
-        "5. [Combinatorial Fragmentation] Top 5 Exact Genre Sets in 'Movies'": """
-            SELECT 
-                g.genre_set, 
-                SUM(f.title_count) AS total_movies
-            FROM fact_title_release f
-            JOIN dim_genre_set g ON f.genre_set_key = g.genre_set_key
-            JOIN dim_title_type t ON f.title_type_key = t.title_type_key
-            WHERE t.title_type = 'movie' 
-              AND g.genre_set != 'Unknown'
-            GROUP BY g.genre_set
-            ORDER BY total_movies DESC
-            LIMIT 5;
-        """,
+        "5. [Genre bridge] Movies: Individual-Genre Membership vs Exact Standalone Combination": GENRE_MEMBERSHIP_SQL.replace("LIMIT 8", "LIMIT 10"),
+        "6. [Snapshot x Genre bridge] Known Series Intervals by Individual Genre (2010 vs 2020)": SERIES_BY_GENRE_SQL,
     }
 
     for title, sql in queries.items():
@@ -138,42 +184,38 @@ def generate_plots(conn: sqlite3.Connection, media_dir: Path) -> None:
     fig.savefig(media_dir / "1_runtime_evolution.png")
     plt.close(fig)
 
-    # --- Plot 2: Annual Series Snapshot (Query 2) ---
-    data_q2 = conn.execute("""
-        SELECT y.year, t.title_type,
-               SUM(c.known_interval_series_count), SUM(c.started_series_unknown_end_count)
-        FROM fact_series_year_snapshot c
-        JOIN dim_year y ON c.year_key = y.year_key
-        JOIN dim_title_type t ON c.title_type_key = t.title_type_key
-        WHERE y.year IN (1990, 2000, 2010, 2020) AND t.title_type IN ('tvSeries', 'tvMiniSeries')
-        GROUP BY y.year, t.title_type
-        ORDER BY y.year;
+    # --- Plot 2: New series vs known intervals vs started-with-unknown-end (Query 2) ---
+    # Three separate measures from two fact tables, never added together. The cumulative
+    # unknown-end count is ~10x larger than the others, so it gets its own panel and scale.
+    rows_q2 = conn.execute("""
+        WITH rel AS (
+            SELECT f.year_key, SUM(f.title_count) AS n
+            FROM fact_title_release f JOIN dim_title_type t ON t.title_type_key = f.title_type_key
+            WHERE t.title_type IN ('tvSeries', 'tvMiniSeries') GROUP BY f.year_key
+        ), snap AS (
+            SELECT year_key, SUM(known_interval_series_count) AS k, SUM(started_series_unknown_end_count) AS u
+            FROM fact_series_year_snapshot GROUP BY year_key
+        )
+        SELECT y.year, COALESCE(rel.n, 0), COALESCE(snap.k, 0), COALESCE(snap.u, 0)
+        FROM dim_year y LEFT JOIN rel USING (year_key) LEFT JOIN snap USING (year_key)
+        WHERE y.year BETWEEN 1950 AND 2023 ORDER BY y.year;
     """).fetchall()
-
-    years = sorted({r[0] for r in data_q2})
-    values = {(r[0], r[1]): (r[2] / 1000, r[3] / 1000) for r in data_q2}
-    fig, axes = plt.subplots(2, 2, figsize=(11, 8), sharex=True)
-    for column, title_type, label in zip(range(2), ('tvSeries', 'tvMiniSeries'), ('TV series', 'TV miniseries')):
-        known = [values.get((year, title_type), (0, 0))[0] for year in years]
-        unknown = [values.get((year, title_type), (0, 0))[1] for year in years]
-        for row, counts, color, description in (
-            (0, known, '#1f77b4', 'Known interval covers year'),
-            (1, unknown, '#ff7f0e', 'Started; end unknown; status indeterminate'),
-        ):
-            ax = axes[row, column]
-            bars = ax.bar(years, counts, width=5, color=color)
-            ax.bar_label(bars, labels=[f'{value:.2f}k' for value in counts], padding=3, fontsize=9)
-            ax.set_title(f'{label}\n{description}', fontweight='bold', fontsize=10)
-            ax.set_ylabel('Series (thousands)')
-            ax.set_xticks(years)
-            ax.set_ylim(0, max(counts + [0.1]) * 1.25)
-            ax.grid(True, axis='y', linestyle='--', alpha=0.4)
-            if row == 1:
-                ax.set_xlabel('Reference year')
-    fig.suptitle('Series Intervals and Missing End-Year Metadata', fontweight='bold')
-    fig.text(0.5, 0.025, 'Separate measures: do not combine into an airing total. Metadata reflects the current extract.', ha='center', fontsize=9)
-    fig.tight_layout(rect=(0, 0.06, 1, 0.95))
-    fig.savefig(media_dir / "2_series_interval_information.png")
+    yrs = [r[0] for r in rows_q2]
+    fig, (ax_top, ax_bot) = plt.subplots(2, 1, figsize=(10, 7.5), sharex=True)
+    ax_top.plot(yrs, [r[1] / 1000 for r in rows_q2], linewidth=2.2, color="#1f77b4", label="New series released (release fact)")
+    ax_top.plot(yrs, [r[2] / 1000 for r in rows_q2], linewidth=2.2, color="#2ca02c", label="Known interval covers year (snapshot)")
+    ax_bot.plot(yrs, [r[3] / 1000 for r in rows_q2], linewidth=2.2, color="#ff7f0e", label="Started, end year unknown (snapshot, cumulative)")
+    for ax, ylabel in ((ax_top, "Series per year (thousands)"), (ax_bot, "Series (thousands)")):
+        ax.axvline(LAST_COMPLETE_YEAR + 1, color="grey", linestyle=":", linewidth=1.5)
+        ax.set_ylabel(ylabel)
+        ax.grid(True, linestyle="--", alpha=0.4)
+        ax.legend(loc="upper left")
+    ax_top.text(LAST_COMPLETE_YEAR + 1.3, ax_top.get_ylim()[1] * 0.55, "extract thins out\nafter 2021", fontsize=9, color="grey")
+    ax_bot.set_xlabel("Reference / release year")
+    fig.suptitle("TV Series: New Releases, Known Intervals and Missing End Years", fontweight="bold")
+    fig.text(0.5, 0.01, "Separate measures: not added into an airing total. Metadata reflects the current extract.", ha="center", fontsize=9)
+    fig.tight_layout(rect=(0, 0.03, 1, 0.96))
+    fig.savefig(media_dir / "2_series_releases_vs_intervals.png")
     plt.close(fig)
 
     # --- Plot 3: Relative Mix of Adult-Flagged Releases by Title Type, per Year (Query 3) ---
@@ -275,24 +317,19 @@ def generate_plots(conn: sqlite3.Connection, media_dir: Path) -> None:
 
     # --- Plot 4: Missing Runtime Percentage (Query 4) ---
     data_q4 = conn.execute("""
-        SELECT 
-            t.title_type,
-            ROUND(((SUM(f.title_count) - SUM(f.runtime_known_count)) * 100.0 / SUM(f.title_count)), 2) AS missing_pct
+        SELECT t.title_type,
+               ROUND(((SUM(f.title_count) - SUM(f.runtime_known_count)) * 100.0 / SUM(f.title_count)), 2) AS missing_pct
         FROM fact_title_release f
         JOIN dim_title_type t ON f.title_type_key = t.title_type_key
         GROUP BY t.title_type
         HAVING SUM(f.title_count) > 10000
-        ORDER BY missing_pct ASC
-        LIMIT 5;
-    """).fetchall()
+        ORDER BY missing_pct ASC;
+    """).fetchall()  # ascending, so the worst type is drawn at the top of the horizontal bars
 
-    types_q4 = [r[0] for r in data_q4]
-    pcts_q4 = [r[1] for r in data_q4]
-
-    fig, ax = plt.subplots(figsize=(8, 4.2))
-    bars = ax.barh(types_q4, pcts_q4, color="#d62728", height=0.55)
+    fig, ax = plt.subplots(figsize=(8, 5))
+    bars = ax.barh([r[0] for r in data_q4], [r[1] for r in data_q4], color="#d62728", height=0.6)
     ax.bar_label(bars, fmt="%.1f%%", padding=4, fontsize=9)
-    ax.set_title("Titles Missing Runtime Information by Category (>10k Titles)", fontweight="bold", pad=12)
+    ax.set_title("Titles Missing Runtime Information by Type (>10k Titles)", fontweight="bold", pad=12)
     ax.set_xlabel("Missing Runtime (%)")
     ax.set_xlim(0, 112)
     ax.grid(True, axis="x", linestyle="--", alpha=0.5)
@@ -300,33 +337,45 @@ def generate_plots(conn: sqlite3.Connection, media_dir: Path) -> None:
     fig.savefig(media_dir / "4_missing_runtime_pct.png")
     plt.close(fig)
 
-    # --- Plot 5: Top 5 Exact Genre Sets in Movies (Query 5) ---
-    data_q5 = conn.execute("""
-        SELECT g.genre_set, SUM(f.title_count) AS total_movies
-        FROM fact_title_release f
-        JOIN dim_genre_set g ON f.genre_set_key = g.genre_set_key
-        JOIN dim_title_type t ON f.title_type_key = t.title_type_key
-        WHERE t.title_type = 'movie' AND g.genre_set != 'Unknown'
-        GROUP BY g.genre_set
-        ORDER BY total_movies DESC
-        LIMIT 5;
-    """).fetchall()[::-1]
-
-    genres_q5 = [r[0] for r in data_q5]
-    counts_q5 = [r[1] / 1000 for r in data_q5]
-
-    fig, ax = plt.subplots(figsize=(8, 4.2))
-    bars = ax.barh(genres_q5, counts_q5, color="#2ca02c", height=0.55)
-    ax.bar_label(bars, fmt="%.1fk", padding=4, fontsize=9)
-    ax.set_title("Top 5 Exact Genre Sets for Movies (All-Time)", fontweight="bold", pad=12)
-    ax.set_xlabel("Total Released Movies (Thousands)")
-    ax.set_xlim(0, max(counts_q5) * 1.15)
-    ax.grid(True, axis="x", linestyle="--", alpha=0.5)
-    fig.tight_layout()
-    fig.savefig(media_dir / "5_top_movie_genres.png")
+    # --- Plot 5: Genre membership vs exact standalone combination, movies (Query 5) ---
+    data_q5 = conn.execute(GENRE_MEMBERSHIP_SQL).fetchall()
+    names = [r[0] for r in data_q5]
+    xs = range(len(names))
+    fig, ax = plt.subplots(figsize=(10, 5))
+    ax.bar([x - 0.2 for x in xs], [r[1] / 1000 for r in data_q5], width=0.4, color="#2ca02c", label="Movies containing the genre (membership)")
+    ax.bar([x + 0.2 for x in xs], [r[2] / 1000 for r in data_q5], width=0.4, color="#9467bd", label="Movies with exactly that genre only")
+    for x, r in zip(xs, data_q5):
+        ax.annotate(f"{r[3]:.0f}%", (x + 0.2, r[2] / 1000), textcoords="offset points", xytext=(0, 4), ha="center", fontsize=9)
+    ax.set_xticks(list(xs))
+    ax.set_xticklabels(names)
+    ax.set_ylabel("Movies (thousands)")
+    ax.set_title("Movies by Individual Genre: Membership vs Exact Combination", fontweight="bold", pad=12)
+    ax.grid(True, axis="y", linestyle="--", alpha=0.5)
+    ax.legend()
+    fig.text(0.5, 0.005, "Labels: % of the genre's movies that carry no other genre. Genre groups overlap: do not sum them.", ha="center", fontsize=9)
+    fig.tight_layout(rect=(0, 0.03, 1, 1))
+    fig.savefig(media_dir / "5_genre_membership_vs_exact.png")
     plt.close(fig)
 
-    print(f"All 5 plots exported to '{media_dir}/'!")
+    # --- Plot 6: Known series intervals by individual genre, 2010 vs 2020 (Query 6) ---
+    data_q6 = conn.execute(SERIES_BY_GENRE_SQL).fetchall()
+    names = [r[0] for r in data_q6]
+    xs = range(len(names))
+    fig, ax = plt.subplots(figsize=(10, 5))
+    ax.bar([x - 0.2 for x in xs], [r[1] for r in data_q6], width=0.4, color="#1f77b4", label="2010")
+    ax.bar([x + 0.2 for x in xs], [r[2] for r in data_q6], width=0.4, color="#ff7f0e", label="2020")
+    ax.set_xticks(list(xs))
+    ax.set_xticklabels(names)
+    ax.set_ylabel("Series with a known interval covering the year")
+    ax.set_title("Known Series Intervals by Individual Genre (2010 vs 2020)", fontweight="bold", pad=12)
+    ax.grid(True, axis="y", linestyle="--", alpha=0.5)
+    ax.legend()
+    fig.text(0.5, 0.005, "Genre groups overlap. The 2020 drop is partly an extract effect: series still airing at extraction have no end year.", ha="center", fontsize=9)
+    fig.tight_layout(rect=(0, 0.03, 1, 1))
+    fig.savefig(media_dir / "6_series_by_genre.png")
+    plt.close(fig)
+
+    print(f"All 6 plots exported to '{media_dir}/'!")
 
 
 if __name__ == "__main__":
