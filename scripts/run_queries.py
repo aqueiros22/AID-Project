@@ -1,25 +1,10 @@
-"""Load the Data Warehouse CSVs into an in-memory SQLite DB, print 5 analytical queries, and export 5 plots to media/."""
-import csv
+"""Query the persistent SQLite warehouse and export analytical plots to media/."""
+import argparse
 import sqlite3
 from pathlib import Path
-import matplotlib.pyplot as plt
-from matplotlib.collections import PolyCollection
-from matplotlib.ticker import PercentFormatter
-
-def load_db(data_dir: Path) -> sqlite3.Connection:
-    print("⏳ Loading Data Warehouse CSVs into in-memory SQLite...\n")
-    conn = sqlite3.connect(":memory:")
-    for csv_file in sorted(data_dir.glob("*.csv")):
-        table_name = csv_file.stem
-        with csv_file.open("r", encoding="utf-8", newline="") as f:
-            reader = csv.reader(f)
-            headers = next(reader)
-            cols_def = ", ".join([f'"{h}" NUMERIC' for h in headers])
-            conn.execute(f"CREATE TABLE {table_name} ({cols_def})")
-            placeholders = ", ".join(["?"] * len(headers))
-            conn.executemany(f"INSERT INTO {table_name} VALUES ({placeholders})", reader)
-    conn.commit()
-    return conn
+from scripts.genre_queries import find_titles_by_genres, release_count_by_genres, series_counts_by_genres
+from scripts.build_warehouse import open_warehouse
+from scripts.paths import MEDIA, WAREHOUSE
 
 
 def print_terminal_queries(conn: sqlite3.Connection) -> None:
@@ -39,18 +24,19 @@ def print_terminal_queries(conn: sqlite3.Connection) -> None:
             GROUP BY y.decade, t.title_type
             ORDER BY y.decade DESC, t.title_type;
         """,
-        "2. [Semi-Additive] Snapshot: Cumulative Catalog Growth at Decade Closings": """
+        "2. [Semi-Additive] Known Series Intervals and Started Series with Unknown End": """
             SELECT 
                 y.year AS snapshot_year, 
                 t.title_type, 
-                SUM(c.catalog_title_count) AS total_accumulated_titles
-            FROM fact_year_end_catalog c
+                SUM(c.known_interval_series_count) AS known_intervals,
+                SUM(c.started_series_unknown_end_count) AS started_unknown_end
+            FROM fact_series_year_snapshot c
             JOIN dim_year y ON c.year_key = y.year_key
             JOIN dim_title_type t ON c.title_type_key = t.title_type_key
             WHERE y.year IN (1990, 2000, 2010, 2020) 
-              AND t.title_type IN ('movie', 'tvSeries')
+              AND t.title_type IN ('tvSeries', 'tvMiniSeries')
             GROUP BY y.year, t.title_type
-            ORDER BY y.year DESC, total_accumulated_titles DESC;
+            ORDER BY y.year DESC, t.title_type;
         """,
         "3. [Audience x Time x Title Type] Adult-Flagged Releases Across Decades by Format": """
             SELECT 
@@ -99,7 +85,7 @@ def print_terminal_queries(conn: sqlite3.Connection) -> None:
     }
 
     for title, sql in queries.items():
-        print(f"📊 {title}")
+        print(title)
         cursor = conn.execute(sql)
         columns = [desc[0] for desc in cursor.description]
         width = max(110, len(columns) * 21 - 3)  # grow the rule with the number of columns
@@ -112,6 +98,10 @@ def print_terminal_queries(conn: sqlite3.Connection) -> None:
 
 
 def generate_plots(conn: sqlite3.Connection, media_dir: Path) -> None:
+    import matplotlib.pyplot as plt
+    from matplotlib.collections import PolyCollection
+    from matplotlib.ticker import PercentFormatter
+
     media_dir.mkdir(parents=True, exist_ok=True)
     plt.rcParams.update({"font.size": 10, "figure.dpi": 300})
 
@@ -148,36 +138,42 @@ def generate_plots(conn: sqlite3.Connection, media_dir: Path) -> None:
     fig.savefig(media_dir / "1_runtime_evolution.png")
     plt.close(fig)
 
-    # --- Plot 2: Cumulative Catalog Growth (Query 2) ---
+    # --- Plot 2: Annual Series Snapshot (Query 2) ---
     data_q2 = conn.execute("""
-        SELECT y.year, t.title_type, SUM(c.catalog_title_count)
-        FROM fact_year_end_catalog c
+        SELECT y.year, t.title_type,
+               SUM(c.known_interval_series_count), SUM(c.started_series_unknown_end_count)
+        FROM fact_series_year_snapshot c
         JOIN dim_year y ON c.year_key = y.year_key
         JOIN dim_title_type t ON c.title_type_key = t.title_type_key
-        WHERE y.year IN (1990, 2000, 2010, 2020) AND t.title_type IN ('movie', 'tvSeries')
+        WHERE y.year IN (1990, 2000, 2010, 2020) AND t.title_type IN ('tvSeries', 'tvMiniSeries')
         GROUP BY y.year, t.title_type
         ORDER BY y.year;
     """).fetchall()
 
     years = sorted({r[0] for r in data_q2})
-    movies_cat = [r[2] / 1000 for r in data_q2 if r[1] == "movie"]
-    series_cat = [r[2] / 1000 for r in data_q2 if r[1] == "tvSeries"]
-
-    fig, ax = plt.subplots(figsize=(8, 4.8))
-    width = 3.2
-    bars1 = ax.bar([y - width / 2 for y in years], movies_cat, width=width, color="#1f77b4", label="Movies")
-    bars2 = ax.bar([y + width / 2 for y in years], series_cat, width=width, color="#ff7f0e", label="TV Series")
-    ax.bar_label(bars1, fmt="%.0fk", padding=3, fontsize=9)
-    ax.bar_label(bars2, fmt="%.0fk", padding=3, fontsize=9)
-    ax.set_title("Cumulative Catalog Size at Decade End (Snapshot Facts)", fontweight="bold", pad=12)
-    ax.set_xlabel("Snapshot Reference Year")
-    ax.set_ylabel("Accumulated Titles (Thousands)")
-    ax.set_xticks(years)
-    ax.set_ylim(0, max(movies_cat) * 1.15)
-    ax.grid(True, axis="y", linestyle="--", alpha=0.5)
-    ax.legend()
-    fig.tight_layout()
-    fig.savefig(media_dir / "2_catalog_growth.png")
+    values = {(r[0], r[1]): (r[2] / 1000, r[3] / 1000) for r in data_q2}
+    fig, axes = plt.subplots(2, 2, figsize=(11, 8), sharex=True)
+    for column, title_type, label in zip(range(2), ('tvSeries', 'tvMiniSeries'), ('TV series', 'TV miniseries')):
+        known = [values.get((year, title_type), (0, 0))[0] for year in years]
+        unknown = [values.get((year, title_type), (0, 0))[1] for year in years]
+        for row, counts, color, description in (
+            (0, known, '#1f77b4', 'Known interval covers year'),
+            (1, unknown, '#ff7f0e', 'Started; end unknown; status indeterminate'),
+        ):
+            ax = axes[row, column]
+            bars = ax.bar(years, counts, width=5, color=color)
+            ax.bar_label(bars, labels=[f'{value:.2f}k' for value in counts], padding=3, fontsize=9)
+            ax.set_title(f'{label}\n{description}', fontweight='bold', fontsize=10)
+            ax.set_ylabel('Series (thousands)')
+            ax.set_xticks(years)
+            ax.set_ylim(0, max(counts + [0.1]) * 1.25)
+            ax.grid(True, axis='y', linestyle='--', alpha=0.4)
+            if row == 1:
+                ax.set_xlabel('Reference year')
+    fig.suptitle('Series Intervals and Missing End-Year Metadata', fontweight='bold')
+    fig.text(0.5, 0.025, 'Separate measures: do not combine into an airing total. Metadata reflects the current extract.', ha='center', fontsize=9)
+    fig.tight_layout(rect=(0, 0.06, 1, 0.95))
+    fig.savefig(media_dir / "2_series_interval_information.png")
     plt.close(fig)
 
     # --- Plot 3: Relative Mix of Adult-Flagged Releases by Title Type, per Year (Query 3) ---
@@ -330,10 +326,34 @@ def generate_plots(conn: sqlite3.Connection, media_dir: Path) -> None:
     fig.savefig(media_dir / "5_top_movie_genres.png")
     plt.close(fig)
 
-    print(f"✅ All 5 plots exported to '{media_dir}/'!")
+    print(f"All 5 plots exported to '{media_dir}/'!")
 
 
 if __name__ == "__main__":
-    db_conn = load_db(Path("refined"))
-    print_terminal_queries(db_conn)
-    generate_plots(db_conn, Path("media"))
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--database', type=Path, default=WAREHOUSE)
+    parser.add_argument('--no-plots', action='store_true', help='Print analytical queries without generating figures')
+    parser.add_argument('--genre', action='append', help='Individual genre, e.g. Comedy; repeat for an OR search')
+    parser.add_argument('--snapshot-year', type=int, help='Reference year for a genre search; defaults to cutoff')
+    args = parser.parse_args()
+    db_conn = open_warehouse(args.database)
+    if args.genre:
+        year = args.snapshot_year
+        if year is None:
+            year = db_conn.execute('SELECT MAX(year_key) FROM dim_year').fetchone()[0]
+        if not db_conn.execute('SELECT 1 FROM dim_year WHERE year_key = ?', (year,)).fetchone():
+            parser.error('Snapshot year must be within the generated year dimension')
+        print('Genres (any match):', ', '.join(args.genre))
+        print('Matching releases:', release_count_by_genres(db_conn, args.genre))
+        known, unknown = series_counts_by_genres(db_conn, args.genre, year)
+        print(f'Known series intervals covering {year}: {known}')
+        print(f'Series started by {year} with unknown end: {unknown} (airing status indeterminate)')
+        print('These measures must not be combined into an airing total.')
+        print('First 20 matching titles (most recent first):')
+        for title in find_titles_by_genres(db_conn, args.genre):
+            print(' | '.join(map(str, title)))
+    else:
+        print_terminal_queries(db_conn)
+        if not args.no_plots:
+            generate_plots(db_conn, MEDIA)
+    db_conn.close()
