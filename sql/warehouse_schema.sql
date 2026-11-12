@@ -1,6 +1,6 @@
 -- SQLite 3.37+; strict physical types. Dates are ISO-8601 TEXT.
 PRAGMA foreign_keys = ON;
-PRAGMA user_version = 2;
+PRAGMA user_version = 4;
 
 CREATE TABLE dim_year (
     year_key INTEGER PRIMARY KEY CHECK (year_key BETWEEN 1 AND 9999),
@@ -88,3 +88,15 @@ CREATE TABLE warehouse_metadata (
     source_report_json TEXT NOT NULL,
     validation_json TEXT NOT NULL
 ) STRICT;
+
+-- Current ratings only: download date and source hash are in warehouse_metadata.
+CREATE TABLE fact_title_rating_snapshot (
+    title_id TEXT PRIMARY KEY NOT NULL CHECK (length(title_id) > 0),
+    year_key INTEGER NOT NULL REFERENCES dim_year,
+    title_type_key INTEGER NOT NULL REFERENCES dim_title_type,
+    genre_set_key INTEGER NOT NULL REFERENCES dim_genre_set,
+    audience_key INTEGER NOT NULL REFERENCES dim_audience,
+    average_rating REAL NOT NULL CHECK (average_rating BETWEEN 1 AND 10),
+    num_votes INTEGER NOT NULL CHECK (num_votes > 0),
+    rated_title_count INTEGER NOT NULL CHECK (rated_title_count = 1)
+) STRICT, WITHOUT ROWID;

@@ -1,0 +1,354 @@
+{
+  "scope": "tvSeries released/started from 1980 through the warehouse cutoff",
+  "percentile_method": "linear interpolation at (n - 1) * p",
+  "source_provenance": {
+    "provided_by": "IMDb Non-Commercial Datasets",
+    "source_file": "C:\\FEUP\\MEIC\\2 ano\\AID\\projeto\\data\\raw\\title.basics.tsv",
+    "sha256": "73f5949b11c16c56e60688e26d2d65027de0f3cfd484df801e913ecd45abac76",
+    "size_bytes": 1125442595,
+    "original_extraction_date": null,
+    "extract_version": null,
+    "download_date": "2026-11-12",
+    "url": "https://datasets.imdbws.com/title.basics.tsv.gz"
+  },
+  "inspected_source": "C:\\FEUP\\MEIC\\2 ano\\AID\\projeto\\data\\raw\\title.basics.tsv",
+  "decades": {
+    "1980": {
+      "total_titles": 12488,
+      "known_titles": 6737,
+      "coverage_pct": 53.94778987828315,
+      "mean": 50.11845034881995,
+      "median": 30,
+      "p95": 120.0,
+      "p99": 333.84000000000196,
+      "maximum": 4800,
+      "runtime_sum": 337648,
+      "thresholds": [
+        {
+          "max_minutes": 120,
+          "removed_titles": 241,
+          "removed_pct": 3.577259907970907,
+          "mean_retained": 39.83112684729064
+        },
+        {
+          "max_minutes": 240,
+          "removed_titles": 99,
+          "removed_pct": 1.469496808668547,
+          "mean_retained": 42.80099427538415
+        },
+        {
+          "max_minutes": 1440,
+          "removed_titles": 2,
+          "removed_pct": 0.029686804215526198,
+          "mean_retained": 48.932887899034895
+        }
+      ],
+      "mean_without_largest": 49.41330166270784,
+      "largest_runtime_share_pct": 1.4215988248116382
+    },
+    "1990": {
+      "total_titles": 22278,
+      "known_titles": 11090,
+      "coverage_pct": 49.780052069306045,
+      "mean": 50.18106402164112,
+      "median": 30.0,
+      "p95": 120.0,
+      "p99": 252.33000000000175,
+      "maximum": 8400,
+      "runtime_sum": 556508,
+      "thresholds": [
+        {
+          "max_minutes": 120,
+          "removed_titles": 351,
+          "removed_pct": 3.1650135256988277,
+          "mean_retained": 41.13036595586181
+        },
+        {
+          "max_minutes": 240,
+          "removed_titles": 117,
+          "removed_pct": 1.055004508566276,
+          "mean_retained": 44.12321151918345
+        },
+        {
+          "max_minutes": 1440,
+          "removed_titles": 7,
+          "removed_pct": 0.06311992786293959,
+          "mean_retained": 48.31426509067942
+        }
+      ],
+      "mean_without_largest": 49.42808188294706,
+      "largest_runtime_share_pct": 1.509412263615258
+    },
+    "2000": {
+      "total_titles": 47186,
+      "known_titles": 22739,
+      "coverage_pct": 48.19014114355953,
+      "mean": 213.2064734596948,
+      "median": 30,
+      "p95": 120.0,
+      "p99": 312.0,
+      "maximum": 3692080,
+      "runtime_sum": 4848102,
+      "thresholds": [
+        {
+          "max_minutes": 120,
+          "removed_titles": 877,
+          "removed_pct": 3.856809886098773,
+          "mean_retained": 40.348229805141344
+        },
+        {
+          "max_minutes": 240,
+          "removed_titles": 293,
+          "removed_pct": 1.2885351158802059,
+          "mean_retained": 43.974605720395616
+        },
+        {
+          "max_minutes": 1440,
+          "removed_titles": 15,
+          "removed_pct": 0.06596596156383307,
+          "mean_retained": 49.42963386727689
+        }
+      ],
+      "mean_without_largest": 50.8409710616589,
+      "largest_runtime_share_pct": 76.15516340209014
+    },
+    "2010": {
+      "total_titles": 105195,
+      "known_titles": 36442,
+      "coverage_pct": 34.64233090926375,
+      "mean": 41.71423083255584,
+      "median": 30.0,
+      "p95": 100.0,
+      "p99": 210.0,
+      "maximum": 6834,
+      "runtime_sum": 1520150,
+      "thresholds": [
+        {
+          "max_minutes": 120,
+          "removed_titles": 908,
+          "removed_pct": 2.491630536194501,
+          "mean_retained": 35.91563010074858
+        },
+        {
+          "max_minutes": 240,
+          "removed_titles": 251,
+          "removed_pct": 0.6887657098951759,
+          "mean_retained": 38.44292779972921
+        },
+        {
+          "max_minutes": 1440,
+          "removed_titles": 7,
+          "removed_pct": 0.01920860545524395,
+          "mean_retained": 41.10377384383148
+        }
+      ],
+      "mean_without_largest": 41.52783952141818,
+      "largest_runtime_share_pct": 0.44956089859553333
+    },
+    "2020": {
+      "total_titles": 73765,
+      "known_titles": 21511,
+      "coverage_pct": 29.161526469192708,
+      "mean": 93.71512249546744,
+      "median": 35,
+      "p95": 120.0,
+      "p99": 270.0,
+      "maximum": 1000000,
+      "runtime_sum": 2015906,
+      "thresholds": [
+        {
+          "max_minutes": 120,
+          "removed_titles": 887,
+          "removed_pct": 4.123471712147274,
+          "mean_retained": 37.45994957331265
+        },
+        {
+          "max_minutes": 240,
+          "removed_titles": 253,
+          "removed_pct": 1.1761424387522663,
+          "mean_retained": 41.49162668171982
+        },
+        {
+          "max_minutes": 1440,
+          "removed_titles": 11,
+          "removed_pct": 0.05113662777183767,
+          "mean_retained": 45.87362790697674
+        }
+      ],
+      "mean_without_largest": 47.22947466294747,
+      "largest_runtime_share_pct": 49.605487557455554
+    }
+  },
+  "top_2000s": [
+    {
+      "title_id": "tt7493646",
+      "title": "The Angry Grandpa Show",
+      "start_year": 2007,
+      "runtime_minutes": 3692080,
+      "raw_record": {
+        "tconst": "tt7493646",
+        "titleType": "tvSeries",
+        "primaryTitle": "The Angry Grandpa Show",
+        "originalTitle": "The Angry Grandpa Show",
+        "isAdult": "0",
+        "startYear": "2007",
+        "endYear": "2017",
+        "runtimeMinutes": "3692080",
+        "genres": "Comedy,Drama,Reality-TV"
+      }
+    },
+    {
+      "title_id": "tt13281484",
+      "title": "P3aksjonen",
+      "start_year": 2009,
+      "runtime_minutes": 6000,
+      "raw_record": {
+        "tconst": "tt13281484",
+        "titleType": "tvSeries",
+        "primaryTitle": "P3aksjonen",
+        "originalTitle": "P3aksjonen",
+        "isAdult": "0",
+        "startYear": "2009",
+        "endYear": "\\N",
+        "runtimeMinutes": "6000",
+        "genres": "Talk-Show"
+      }
+    },
+    {
+      "title_id": "tt0804414",
+      "title": "Desire",
+      "start_year": 2006,
+      "runtime_minutes": 3900,
+      "raw_record": {
+        "tconst": "tt0804414",
+        "titleType": "tvSeries",
+        "primaryTitle": "Desire",
+        "originalTitle": "Desire",
+        "isAdult": "0",
+        "startYear": "2006",
+        "endYear": "2006",
+        "runtimeMinutes": "3900",
+        "genres": "Drama"
+      }
+    },
+    {
+      "title_id": "tt37300532",
+      "title": "Historias de fuego",
+      "start_year": 2007,
+      "runtime_minutes": 2610,
+      "raw_record": {
+        "tconst": "tt37300532",
+        "titleType": "tvSeries",
+        "primaryTitle": "Historias de fuego",
+        "originalTitle": "Historias de fuego",
+        "isAdult": "0",
+        "startYear": "2007",
+        "endYear": "2007",
+        "runtimeMinutes": "2610",
+        "genres": "Action,Drama,Romance"
+      }
+    },
+    {
+      "title_id": "tt3675380",
+      "title": "Ariel Mothers aka Ariel Maa",
+      "start_year": 2000,
+      "runtime_minutes": 2288,
+      "raw_record": {
+        "tconst": "tt3675380",
+        "titleType": "tvSeries",
+        "primaryTitle": "Ariel Mothers aka Ariel Maa",
+        "originalTitle": "Ariel Mothers aka Ariel Maa",
+        "isAdult": "0",
+        "startYear": "2000",
+        "endYear": "2002",
+        "runtimeMinutes": "2288",
+        "genres": "Talk-Show"
+      }
+    },
+    {
+      "title_id": "tt37231573",
+      "title": "Los pequeños fugitivos",
+      "start_year": 2001,
+      "runtime_minutes": 2160,
+      "raw_record": {
+        "tconst": "tt37231573",
+        "titleType": "tvSeries",
+        "primaryTitle": "Los pequeños fugitivos",
+        "originalTitle": "Los pequeños fugitivos",
+        "isAdult": "0",
+        "startYear": "2001",
+        "endYear": "2001",
+        "runtimeMinutes": "2160",
+        "genres": "Action,Adventure,Comedy"
+      }
+    },
+    {
+      "title_id": "tt0806000",
+      "title": "Zona",
+      "start_year": 2006,
+      "runtime_minutes": 2150,
+      "raw_record": {
+        "tconst": "tt0806000",
+        "titleType": "tvSeries",
+        "primaryTitle": "Zona",
+        "originalTitle": "Zona",
+        "isAdult": "0",
+        "startYear": "2006",
+        "endYear": "2006",
+        "runtimeMinutes": "2150",
+        "genres": "Crime,Drama"
+      }
+    },
+    {
+      "title_id": "tt32544161",
+      "title": "Química, el juego del amor",
+      "start_year": 2008,
+      "runtime_minutes": 2030,
+      "raw_record": {
+        "tconst": "tt32544161",
+        "titleType": "tvSeries",
+        "primaryTitle": "Química, el juego del amor",
+        "originalTitle": "Química, el juego del amor",
+        "isAdult": "0",
+        "startYear": "2008",
+        "endYear": "2009",
+        "runtimeMinutes": "2030",
+        "genres": "Family,Sport"
+      }
+    },
+    {
+      "title_id": "tt32676714",
+      "title": "La maga y el camino dorado",
+      "start_year": 2008,
+      "runtime_minutes": 2027,
+      "raw_record": {
+        "tconst": "tt32676714",
+        "titleType": "tvSeries",
+        "primaryTitle": "La maga y el camino dorado",
+        "originalTitle": "La maga y el camino dorado",
+        "isAdult": "0",
+        "startYear": "2008",
+        "endYear": "\\N",
+        "runtimeMinutes": "2027",
+        "genres": "Drama,Fantasy"
+      }
+    },
+    {
+      "title_id": "tt0953030",
+      "title": "Drunken Hero",
+      "start_year": 2002,
+      "runtime_minutes": 1800,
+      "raw_record": {
+        "tconst": "tt0953030",
+        "titleType": "tvSeries",
+        "primaryTitle": "Drunken Hero",
+        "originalTitle": "Da zui xia",
+        "isAdult": "0",
+        "startYear": "2002",
+        "endYear": "\\N",
+        "runtimeMinutes": "1800",
+        "genres": "Action"
+      }
+    }
+  ]
+}

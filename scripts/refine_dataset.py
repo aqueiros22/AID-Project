@@ -1,4 +1,4 @@
-"""Build title releases and annual series interval-information snapshots."""
+"""Build releases, annual series intervals and an IMDb ratings extract."""
 import argparse
 import csv
 import hashlib
@@ -7,19 +7,23 @@ import os
 import tempfile
 from collections import Counter, defaultdict
 from pathlib import Path
-from scripts.paths import RAW_DATA, REFINED
+from scripts.paths import RAW_DATA, RATINGS_DATA, REFINED
+from scripts.ratings_etl import add_ratings
 
 
 SERIES_TYPES = frozenset({'tvSeries', 'tvMiniSeries'})
 
 
-def build(source, output, cutoff, *, minimum_release_facts=10001):
+def build(source, output, cutoff, *, minimum_release_facts=10001, ratings_source=None, download_date="2026-11-12"):
     """Validate staged outputs before publishing; roll back publication errors."""
     source, output = Path(source), Path(output)
     output.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix='.refine-', dir=output.parent) as temporary:
         staging = Path(temporary) / 'next'
         report = _build(source, staging, cutoff, minimum_release_facts=minimum_release_facts)
+        report.update(add_ratings(staging, ratings_source, download_date))
+        report["source_provenance"].update(provided_by="IMDb Non-Commercial Datasets", download_date=download_date, url="https://datasets.imdbws.com/title.basics.tsv.gz")
+        (staging / "validation_report.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
         output.mkdir(parents=True, exist_ok=True)
         backup = Path(temporary) / 'previous'
         backup.mkdir()
@@ -32,16 +36,18 @@ def build(source, output, cutoff, *, minimum_release_facts=10001):
                     saved.append(path.name)
                 os.replace(path, destination)
                 published.append(path.name)
-            legacy = output / 'fact_year_end_catalog.csv'
-            if legacy.exists():
-                os.replace(legacy, backup / legacy.name)
-                saved.append(legacy.name)
+            for name in ('fact_year_end_catalog.csv', 'dim_rating_extract.csv'):
+                legacy = output / name
+                if legacy.exists():
+                    os.replace(legacy, backup / legacy.name)
+                    saved.append(legacy.name)
         except Exception:
             for name in published:
                 (output / name).unlink()
             for name in saved:
                 os.replace(backup / name, output / name)
             raise
+    print(json.dumps(report, indent=2))
     return report
 
 
@@ -194,7 +200,7 @@ def _build(source, output, cutoff, *, minimum_release_facts=10001):
         source_sha256 = hashlib.file_digest(handle, 'sha256').hexdigest()
     report.update(
         source_provenance={
-            'provided_by': 'Course professor',
+            'provided_by': 'IMDb Non-Commercial Datasets',
             'source_file': str(source.resolve()),
             'sha256': source_sha256,
             'size_bytes': source.stat().st_size,
@@ -226,7 +232,6 @@ def _build(source, output, cutoff, *, minimum_release_facts=10001):
     (output / 'validation_report.json').write_text(json.dumps(report, indent=2) + '\n', encoding='utf-8')
     # Retire the previous generated fact after the replacement has passed validation.
     (output / 'fact_year_end_catalog.csv').unlink(missing_ok=True)
-    print(json.dumps(report, indent=2))
     return report
 
 
@@ -235,5 +240,7 @@ if __name__ == '__main__':
     parser.add_argument('--source', type=Path, default=RAW_DATA)
     parser.add_argument('--output', type=Path, default=REFINED)
     parser.add_argument('--cutoff-year', type=int, default=2026, help='Last year to include (may be incomplete)')
+    parser.add_argument('--ratings-source', type=Path, default=RATINGS_DATA)
+    parser.add_argument('--download-date', default='2026-11-12')
     args = parser.parse_args()
-    build(args.source, args.output, args.cutoff_year)
+    build(args.source, args.output, args.cutoff_year, ratings_source=args.ratings_source, download_date=args.download_date)

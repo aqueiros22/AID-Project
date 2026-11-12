@@ -1,15 +1,17 @@
 """Query the persistent SQLite warehouse and export analytical plots to media/."""
 import argparse
+import json
 import sqlite3
 from pathlib import Path
 from scripts.genre_queries import find_titles_by_genres, release_count_by_genres, series_counts_by_genres
 from scripts.build_warehouse import open_warehouse
-from scripts.paths import MEDIA, WAREHOUSE
+from scripts.paths import MEDIA, WAREHOUSE, PROJECT_ROOT
+from scripts.rating_queries import RATING_QUERIES, generate_rating_plots
+from scripts.runtime_diagnostics import investigate
 
 
-# Last reference year with a meaningful volume of titles. The extract holds ~318k titles for 2020,
-# ~71k for 2021 and almost nothing afterwards, so later years are not comparable.
-LAST_COMPLETE_YEAR = 2020
+# Last full calendar year before the documented download date.
+LAST_COMPLETE_YEAR = 2025
 
 # Drill-across: each fact table is aggregated to the same grain (year) BEFORE being combined,
 # so there is no row multiplication. Releases are restricted to the snapshot's series types.
@@ -130,6 +132,8 @@ def print_terminal_queries(conn: sqlite3.Connection) -> None:
         "6. [Snapshot x Genre bridge] Known Series Intervals by Individual Genre (2010 vs 2020)": SERIES_BY_GENRE_SQL,
     }
 
+    queries.update(RATING_QUERIES)
+    results = {}
     for title, sql in queries.items():
         print(title)
         cursor = conn.execute(sql)
@@ -138,16 +142,18 @@ def print_terminal_queries(conn: sqlite3.Connection) -> None:
         print("-" * width)
         print(" | ".join(f"{col:<18}" for col in columns))
         print("-" * width)
-        for row in cursor.fetchall():
+        rows = cursor.fetchall()
+        results[title] = {"columns": columns, "rows": rows}
+        for row in rows:
             print(" | ".join(f"{str(val)[:18]:<18}" for val in row))
         print("\n")
 
+    (PROJECT_ROOT / "data" / "analysis_results.json").write_text(json.dumps(results, indent=2, ensure_ascii=False), encoding="utf-8")
 
-def generate_plots(conn: sqlite3.Connection, media_dir: Path) -> None:
+def generate_runtime_plot(conn: sqlite3.Connection, media_dir: Path) -> None:
+    import matplotlib
+    matplotlib.use("Agg")
     import matplotlib.pyplot as plt
-    from matplotlib.collections import PolyCollection
-    from matplotlib.ticker import PercentFormatter
-
     media_dir.mkdir(parents=True, exist_ok=True)
     plt.rcParams.update({"font.size": 10, "figure.dpi": 300})
 
@@ -166,27 +172,48 @@ def generate_plots(conn: sqlite3.Connection, media_dir: Path) -> None:
     movies_rt = [r[2] for r in data_q1 if r[1] == "movie"]
     series_rt = [r[2] for r in data_q1 if r[1] == "tvSeries"]
 
-    fig, ax = plt.subplots(figsize=(8, 4.8))
-    ax.plot(decades, movies_rt, marker="o", linewidth=2.5, color="#1f77b4", label="Movies")
-    ax.plot(decades, series_rt, marker="s", linewidth=2.5, color="#ff7f0e", label="TV Series")
-    for x, y in zip(decades, movies_rt):
-        ax.annotate(f"{y:.1f}m", (x, y), textcoords="offset points", xytext=(0, 8), ha="center", fontsize=9)
+    diagnostics = investigate(conn)['decades']
+    fig, (ax, robust) = plt.subplots(1, 2, figsize=(12, 5.2))
+    ax.plot(decades, movies_rt, marker="o", linewidth=2, color="#267b83", label="Movies: full mean")
+    ax.plot(decades, series_rt, marker="s", linewidth=2, color="#c45328", label="TV series: full mean")
     for x, y in zip(decades, series_rt):
-        ax.annotate(f"{y:.1f}m", (x, y), textcoords="offset points", xytext=(0, -14), ha="center", fontsize=9)
-    ax.set_title("Average Known Runtime by Decade (1980s–2020s)", fontweight="bold", pad=12)
-    ax.set_xlabel("Decade")
-    ax.set_ylabel("Average Runtime (Minutes)")
-    ax.set_xticks(decades)
-    ax.set_ylim(30, 105)
-    ax.grid(True, linestyle="--", alpha=0.5)
-    ax.legend()
-    fig.tight_layout()
+        ax.annotate(f"{y:.1f}", (x, y), xytext=(0, 8), textcoords="offset points", ha="center", fontsize=9)
+    ax.set(title="Unmodified mean of known runtimes", ylabel="Minutes",
+           ylim=(0, max(movies_rt + series_rt) * 1.2))
+    robust.plot(decades, [diagnostics[str(d)]['median'] for d in decades], 'o-',
+                color="#267b83", label="TV series: median")
+    robust.plot(decades, [diagnostics[str(d)]['mean_without_largest'] for d in decades], 's--',
+                color="#c45328", label="TV series: mean excluding largest")
+    robust.set(title="TV series: robust summary and sensitivity", ylabel="Minutes")
+    robust.set_ylim(bottom=0)
+    for axis in (ax, robust):
+        axis.set_xticks(decades)
+        axis.set_xticklabels([f"{d}s" + ("*" if d == 2020 else "") for d in decades])
+        axis.set_xlabel("Release / start decade")
+        axis.grid(axis='y', linestyle='--', alpha=.3)
+        axis.legend(loc='lower left' if axis is robust else 'upper left', fontsize=9)
+    fig.suptitle("Runtime comparison: the mean is sensitive to extreme source values", fontweight="bold")
+    fig.text(.5, .015, "Positive known runtimes only. *2020s incomplete. Excluding the largest value is a sensitivity check, not a correction.",
+             ha='center', fontsize=9)
+    fig.tight_layout(rect=(0, .05, 1, .94))
     fig.savefig(media_dir / "1_runtime_evolution.png")
     plt.close(fig)
 
+
+def generate_plots(conn: sqlite3.Connection, media_dir: Path) -> None:
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from matplotlib.ticker import PercentFormatter
+
+    media_dir.mkdir(parents=True, exist_ok=True)
+    plt.rcParams.update({"font.size": 10, "figure.dpi": 300})
+
+    generate_runtime_plot(conn, media_dir)
+
     # --- Plot 2: New series vs known intervals vs started-with-unknown-end (Query 2) ---
     # Three separate measures from two fact tables, never added together. The cumulative
-    # unknown-end count is ~10x larger than the others, so it gets its own panel and scale.
+    # unknown-end count has its own panel and scale because it describes a different population.
     rows_q2 = conn.execute("""
         WITH rel AS (
             SELECT f.year_key, SUM(f.title_count) AS n
@@ -198,7 +225,7 @@ def generate_plots(conn: sqlite3.Connection, media_dir: Path) -> None:
         )
         SELECT y.year, COALESCE(rel.n, 0), COALESCE(snap.k, 0), COALESCE(snap.u, 0)
         FROM dim_year y LEFT JOIN rel USING (year_key) LEFT JOIN snap USING (year_key)
-        WHERE y.year BETWEEN 1950 AND 2023 ORDER BY y.year;
+        WHERE y.year BETWEEN 1950 AND 2026 ORDER BY y.year;
     """).fetchall()
     yrs = [r[0] for r in rows_q2]
     fig, (ax_top, ax_bot) = plt.subplots(2, 1, figsize=(10, 7.5), sharex=True)
@@ -210,7 +237,7 @@ def generate_plots(conn: sqlite3.Connection, media_dir: Path) -> None:
         ax.set_ylabel(ylabel)
         ax.grid(True, linestyle="--", alpha=0.4)
         ax.legend(loc="upper left")
-    ax_top.text(LAST_COMPLETE_YEAR + 1.3, ax_top.get_ylim()[1] * 0.55, "extract thins out\nafter 2021", fontsize=9, color="grey")
+    ax_top.text(LAST_COMPLETE_YEAR - 8, ax_top.get_ylim()[1] * 0.55, "2026 incomplete", fontsize=9, color="grey")
     ax_bot.set_xlabel("Reference / release year")
     fig.suptitle("TV Series: New Releases, Known Intervals and Missing End Years", fontweight="bold")
     fig.text(0.5, 0.01, "Separate measures: not added into an airing total. Metadata reflects the current extract.", ha="center", fontsize=9)
@@ -218,20 +245,11 @@ def generate_plots(conn: sqlite3.Connection, media_dir: Path) -> None:
     fig.savefig(media_dir / "2_series_releases_vs_intervals.png")
     plt.close(fig)
 
-    # --- Plot 3: Relative Mix of Adult-Flagged Releases by Title Type, per Year (Query 3) ---
-    # Every ridge is a format's SHARE (%) of all adult-flagged releases in that year, so a year with
-    # 10k titles (8k of them movies) is read on the same scale as a year with 100k titles.
-    # Four types get their own ridge: video, tvEpisode, movie and short (short is ~7% of adult-flagged
-    # titles in 1970-85, while tvSeries is <0.1%). Every other title type (tvSeries, tvMovie,
-    # tvMiniSeries, tvSpecial, tvShort, videoGame, ...) is lumped into "Other types", so the five
-    # ridges add up to 100% in every year.
-    # Years with very few adult-flagged titles are dropped: a share computed from a handful of
-    # titles is mostly noise. Raise/lower the threshold if you want more/less of the early years.
+    # --- Plot 3: 2D small multiples with equal percentage scales and sample sizes ---
+    # No occlusion or perspective distortion; retain gaps for years below the threshold.
     MIN_ADULT_TITLES_PER_YEAR = 25
-    # The source has almost no adult-flagged titles after 2021 (about 9.5k in 2020, 1.3k in 2021,
-    # 2 in 2022, none after), so every ridge would nosedive from a data cliff, not a real trend.
-    # The plot therefore stops at 2020, the last year with reasonably complete data.
-    FIRST_YEAR, LAST_YEAR = 1970, 2020
+    # Exclude the incomplete download year from annual shares.
+    FIRST_YEAR, LAST_YEAR = 1970, LAST_COMPLETE_YEAR
 
     data_q3 = conn.execute("""
         SELECT 
@@ -252,67 +270,34 @@ def generate_plots(conn: sqlite3.Connection, media_dir: Path) -> None:
         ORDER BY y.year;
     """, (FIRST_YEAR, LAST_YEAR, MIN_ADULT_TITLES_PER_YEAR)).fetchall()
 
-    years_q3 = [r[0] for r in data_q3]
-    # Query row = (year, total, video, tvEpisode, movie, short); "Other" = whatever is left of the total.
-    # Ridges are listed front -> back. A tall ridge hides whatever is behind it, so the order follows
-    # who is tall when: movies dominate the early years (back), video the middle ones, tvEpisode the
-    # later ones, and the small groups (short, other) sit in front where they hide nothing.
-    categories = ["Other types", "Short", "Home video", "TV episode", "Movie"]
-    ridge_counts = [
-        lambda r: r[1] - sum(r[2:6]),  # Other types (tvSeries, tvMovie, tvMiniSeries, ...)
-        lambda r: r[5],                # short
-        lambda r: r[2],                # video
-        lambda r: r[3],                # tvEpisode
-        lambda r: r[4],                # movie
-    ]
-    series_list = [[100.0 * count(r) / r[1] for r in data_q3] for count in ridge_counts]
-    colors = ["#7f7f7f", "#2ca02c", "#e377c2", "#17becf", "#9467bd"]
-
-    fig = plt.figure(figsize=(11, 6.5))
-    ax = fig.add_subplot(111, projection="3d")
-    # stretch the year axis so the ridges are not squashed; zoom fills the empty margins
-    ax.set_box_aspect((2.4, 2.1, 1), zoom=1.15)
-
-    verts = []
-    for z_vals in series_list:
-        # Close the polygon at the base (z=0) so it fills like a 3D ridge
-        v = [(years_q3[0], 0)] + list(zip(years_q3, z_vals)) + [(years_q3[-1], 0)]
-        verts.append(v)
-
-    poly = PolyCollection(verts, facecolors=colors, edgecolors="black", linewidths=1.2, alpha=0.75)
-    ax.add_collection3d(poly, zs=range(len(categories)), zdir="y")
-
-    # Plot crisp top edge lines for each 3D curve
-    for idx, (z_vals, color) in enumerate(zip(series_list, colors)):
-        ax.plot(years_q3, [idx] * len(years_q3), z_vals, color=color, linewidth=2.2)
-
-    ax.set_xlabel("Release Year", labelpad=14)
-    ax.set_zlabel("Share of the Year's Adult-Flagged Releases", labelpad=14)
-    ax.set_yticks(range(len(categories)))
-    ax.set_yticklabels(categories, rotation=-20, ha="left", va="center")
-    ax.zaxis.set_major_formatter(PercentFormatter(100, decimals=0))
-    # Put the % axis on the opposite (left) edge so its title can never collide with the
-    # format labels on the right. Needs matplotlib >= 3.10; older versions keep the default side.
-    try:
-        ax.zaxis.set_ticks_position("lower")
-        ax.zaxis.set_label_position("lower")
-    except Exception:
-        pass
-    # push tick labels away from the panes so they do not sit on top of the ridges
-    ax.tick_params(axis="x", pad=6)
-    ax.tick_params(axis="y", pad=10)
-    ax.tick_params(axis="z", pad=8)
-    ax.set_xlim(years_q3[0], years_q3[-1])
-    ax.set_ylim(-0.5, len(categories) - 0.5)
-    ax.set_zlim(0, min(100, max(max(s) for s in series_list) * 1.1))
-
-    fig.suptitle(
-        f"Relative Mix of Adult-Flagged Releases by Format, {years_q3[0]}–{years_q3[-1]} (share of each year's total)",
-        fontweight="bold", y=0.96,
-    )
-    ax.view_init(elev=32, azim=-60)  # a bit higher than before so front ridges hide less of the back ones
-    fig.subplots_adjust(left=0.02, right=0.98, bottom=0.04, top=0.92)
-    fig.savefig(media_dir / "3_adult_evolution_by_decade.png", bbox_inches="tight", pad_inches=0.4)
+    years_q3 = list(range(FIRST_YEAR, LAST_YEAR + 1))
+    by_year = {r[0]: r for r in data_q3}
+    categories = [("Movie", 4), ("Video", 2), ("TV episode", 3), ("Short", 5), ("Other types", None)]
+    fig, axes = plt.subplots(2, 3, figsize=(12, 6.5), sharex=True)
+    colors = ["#267b83", "#c45328", "#5265a8", "#78733a", "#777777"]
+    for ax, (category, index), color in zip(axes.flat, categories, colors):
+        shares = []
+        for year in years_q3:
+            row = by_year.get(year)
+            count = (row[index] if index else row[1] - sum(row[2:6])) if row else None
+            shares.append(100 * count / row[1] if row else float('nan'))
+        ax.plot(years_q3, shares, color=color, linewidth=2)
+        ax.fill_between(years_q3, shares, color=color, alpha=.12)
+        ax.set(title=category, ylim=(0, 100), ylabel="Share of annual titles")
+        ax.yaxis.set_major_formatter(PercentFormatter(100, decimals=0))
+    count_ax = axes.flat[-1]
+    count_ax.plot(years_q3, [by_year[y][1] if y in by_year else float('nan') for y in years_q3], color='#444444')
+    count_ax.set(title="Denominator: adult-flagged titles", ylabel="Titles per year", ylim=(0, None))
+    for ax in axes.flat:
+        ax.set_xlim(FIRST_YEAR, LAST_YEAR)
+        ax.grid(axis='y', linestyle='--', alpha=.3)
+    for ax in axes[-1]:
+        ax.set_xlabel("Release / start year")
+    fig.suptitle(f"Adult-flagged titles by source type, {FIRST_YEAR}-{LAST_YEAR}", fontweight='bold')
+    fig.text(.5, .015, f"Each share uses all adult-flagged titles in its year. Years with fewer than {MIN_ADULT_TITLES_PER_YEAR} titles are omitted; 2026 is incomplete.",
+             ha='center', fontsize=9)
+    fig.tight_layout(rect=(0, .05, 1, .94))
+    fig.savefig(media_dir / "3_adult_evolution_by_decade.png")
     plt.close(fig)
 
     # --- Plot 4: Missing Runtime Percentage (Query 4) ---
@@ -370,12 +355,13 @@ def generate_plots(conn: sqlite3.Connection, media_dir: Path) -> None:
     ax.set_title("Known Series Intervals by Individual Genre (2010 vs 2020)", fontweight="bold", pad=12)
     ax.grid(True, axis="y", linestyle="--", alpha=0.5)
     ax.legend()
-    fig.text(0.5, 0.005, "Genre groups overlap. The 2020 drop is partly an extract effect: series still airing at extraction have no end year.", ha="center", fontsize=9)
+    fig.text(0.5, 0.005, "Genre groups overlap. Missing end years leave airing status unknown; known intervals do not prove annual activity.", ha="center", fontsize=9)
     fig.tight_layout(rect=(0, 0.03, 1, 1))
     fig.savefig(media_dir / "6_series_by_genre.png")
     plt.close(fig)
 
-    print(f"All 6 plots exported to '{media_dir}/'!")
+    generate_rating_plots(conn, media_dir)
+    print(f"All 8 plots exported to '{media_dir}/'!")
 
 
 if __name__ == "__main__":

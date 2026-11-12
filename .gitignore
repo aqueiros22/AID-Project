@@ -19,3 +19,8 @@ data/raw/
 
 # Reproducible local warehouse and SQLite sidecar files
 data/warehouse/
+
+# Local execution logs
+data/*_run.log
+
+data/analysis_results.json

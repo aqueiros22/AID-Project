@@ -12,6 +12,7 @@ from scripts.paths import REFINED, SCHEMA, WAREHOUSE
 TABLES = (
     'dim_year', 'dim_title_type', 'dim_genre_set', 'dim_audience', 'dim_genre',
     'bridge_genre_set_genre', 'fact_title_release', 'fact_series_year_snapshot',
+    'fact_title_rating_snapshot',
 )
 INDEXES = (
     'CREATE INDEX release_type_year ON fact_title_release (title_type_key, year_key)',
@@ -29,7 +30,7 @@ def open_warehouse(database, *, readonly=True):
     mode = 'ro' if readonly else 'rw'
     conn = sqlite3.connect(database.as_uri() + f'?mode={mode}', uri=True)
     conn.execute('PRAGMA foreign_keys = ON')
-    if conn.execute('PRAGMA user_version').fetchone()[0] != 2:
+    if conn.execute('PRAGMA user_version').fetchone()[0] != 4:
         conn.close()
         raise ValueError('Unsupported warehouse schema. Rebuild with python -m scripts.build_warehouse.')
     return conn
@@ -74,6 +75,7 @@ def validate_warehouse(conn, source_report, *, minimum_release_facts=10001):
     counts = {table: conn.execute(f'SELECT COUNT(*) FROM {table}').fetchone()[0]
               for table in TABLES}
     expected = {
+        'fact_title_rating_snapshot': source_report['rating_facts'],
         'dim_year': source_report['year_members'],
         'bridge_genre_set_genre': source_report['genre_bridge_rows'],
         'fact_title_release': source_report['release_facts'],
@@ -91,6 +93,17 @@ def validate_warehouse(conn, source_report, *, minimum_release_facts=10001):
     if release_totals != (source_report['release_facts'], source_report['total_runtime_minutes'],
                           source_report['known_runtime_facts']):
         raise ValueError('Release measures differ from ETL report')
+    rating_votes = conn.execute('SELECT COALESCE(SUM(num_votes), 0) FROM fact_title_rating_snapshot').fetchone()[0]
+    if rating_votes != source_report['rating_votes_total']:
+        raise ValueError('Rating vote totals differ from ETL report')
+    if conn.execute("""
+        SELECT 1 FROM fact_title_rating_snapshot r
+        LEFT JOIN fact_title_release f ON f.title_id = r.title_id
+        WHERE f.title_id IS NULL OR r.year_key != f.year_key
+           OR r.title_type_key != f.title_type_key OR r.genre_set_key != f.genre_set_key
+           OR r.audience_key != f.audience_key LIMIT 1
+    """).fetchone():
+        raise ValueError('Rating dimensions differ from eligible release')
     snapshot_totals = conn.execute('''
         SELECT COALESCE(SUM(known_interval_series_count), 0),
                COALESCE(SUM(started_series_unknown_end_count), 0)

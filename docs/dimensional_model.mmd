@@ -1,0 +1,72 @@
+erDiagram
+    direction LR
+    dim_year {
+        INTEGER year_key PK
+        INTEGER year UK
+        INTEGER decade
+        INTEGER century
+        TEXT snapshot_date
+    }
+    dim_title_type {
+        INTEGER title_type_key PK
+        TEXT title_type UK
+    }
+    dim_genre_set {
+        INTEGER genre_set_key PK
+        TEXT genre_set UK
+    }
+    dim_audience {
+        INTEGER audience_key PK
+        TEXT audience UK
+    }
+    dim_genre {
+        INTEGER genre_key PK
+        TEXT genre UK
+    }
+    bridge_genre_set_genre {
+        INTEGER genre_set_key PK, FK
+        INTEGER genre_key PK, FK
+    }
+    fact_title_release {
+        TEXT title_id PK
+        TEXT primary_title
+        INTEGER year_key FK
+        INTEGER title_type_key FK
+        INTEGER genre_set_key FK
+        INTEGER audience_key FK
+        INTEGER title_count
+        INTEGER runtime_minutes
+        INTEGER runtime_known_count
+    }
+    fact_series_year_snapshot {
+        INTEGER year_key PK, FK
+        INTEGER title_type_key PK, FK
+        INTEGER genre_set_key PK, FK
+        INTEGER audience_key PK, FK
+        INTEGER known_interval_series_count
+        INTEGER started_series_unknown_end_count
+    }
+    fact_title_rating_snapshot {
+        TEXT title_id PK
+        INTEGER year_key FK
+        INTEGER title_type_key FK
+        INTEGER genre_set_key FK
+        INTEGER audience_key FK
+        REAL average_rating
+        INTEGER num_votes
+        INTEGER rated_title_count
+    }
+    dim_genre_set ||--o{ bridge_genre_set_genre : "genre_set_key"
+    dim_genre ||--o{ bridge_genre_set_genre : "genre_key"
+    dim_year ||..o{ fact_title_release : "year_key"
+    dim_title_type ||..o{ fact_title_release : "title_type_key"
+    dim_genre_set ||..o{ fact_title_release : "genre_set_key"
+    dim_audience ||..o{ fact_title_release : "audience_key"
+    dim_year ||--o{ fact_series_year_snapshot : "year_key"
+    dim_title_type ||--o{ fact_series_year_snapshot : "title_type_key"
+    dim_genre_set ||--o{ fact_series_year_snapshot : "genre_set_key"
+    dim_audience ||--o{ fact_series_year_snapshot : "audience_key"
+    dim_year ||..o{ fact_title_rating_snapshot : "year_key"
+    dim_title_type ||..o{ fact_title_rating_snapshot : "title_type_key"
+    dim_genre_set ||..o{ fact_title_rating_snapshot : "genre_set_key"
+    dim_audience ||..o{ fact_title_rating_snapshot : "audience_key"
