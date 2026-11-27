@@ -8,7 +8,8 @@ import tempfile
 from collections import Counter, defaultdict
 from pathlib import Path
 from scripts.crew_etl import add_crew
-from scripts.paths import CREW_DATA, NAMES_DATA, RAW_DATA, RATINGS_DATA, REFINED
+from scripts.episode_etl import add_episodes
+from scripts.paths import CREW_DATA, EPISODE_DATA, NAMES_DATA, RAW_DATA, RATINGS_DATA, REFINED
 from scripts.ratings_etl import add_ratings
 
 
@@ -16,7 +17,8 @@ SERIES_TYPES = frozenset({'tvSeries', 'tvMiniSeries'})
 
 
 def build(source, output, cutoff, *, minimum_release_facts=10001, ratings_source=None, download_date="2026-11-12",
-          crew_source=None, names_source=None, crew_download_date="2026-11-27"):
+          crew_source=None, names_source=None, crew_download_date="2026-11-27",
+          episode_source=None, episode_download_date="2026-11-27"):
     """Validate staged outputs before publishing; roll back publication errors."""
     source, output = Path(source), Path(output)
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -26,6 +28,8 @@ def build(source, output, cutoff, *, minimum_release_facts=10001, ratings_source
         report.update(add_ratings(staging, ratings_source, download_date))
         if crew_source is not None:
             report.update(add_crew(staging, crew_source, names_source, crew_download_date))
+        if episode_source is not None:
+            report.update(add_episodes(staging, episode_source, episode_download_date))
         report["source_provenance"].update(provided_by="IMDb Non-Commercial Datasets", download_date=download_date, url="https://datasets.imdbws.com/title.basics.tsv.gz")
         (staging / "validation_report.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
         output.mkdir(parents=True, exist_ok=True)
@@ -249,10 +253,17 @@ if __name__ == '__main__':
     parser.add_argument('--crew-source', type=Path, default=CREW_DATA)
     parser.add_argument('--names-source', type=Path, default=NAMES_DATA)
     parser.add_argument('--crew-download-date', default='2026-11-27')
+    parser.add_argument('--episode-source', type=Path, default=EPISODE_DATA)
+    parser.add_argument('--episode-download-date', default='2026-11-27')
     args = parser.parse_args()
     use_crew = args.crew_source.is_file() and args.names_source.is_file()
     if not use_crew:
         print('Crew files not found: directors and writers are skipped.')
+    use_episodes = args.episode_source.is_file()
+    if not use_episodes:
+        print('Episode file not found: seasons and episodes are skipped.')
     build(args.source, args.output, args.cutoff_year, ratings_source=args.ratings_source, download_date=args.download_date,
           crew_source=args.crew_source if use_crew else None, names_source=args.names_source if use_crew else None,
-          crew_download_date=args.crew_download_date)
+          crew_download_date=args.crew_download_date,
+          episode_source=args.episode_source if use_episodes else None,
+          episode_download_date=args.episode_download_date)
