@@ -1,14 +1,17 @@
-"""Extract directors and writers of eligible titles into a person dimension and a bridge.
+"""Extract directors, writers and top-billed cast into a person dimension and a bridge.
 
-Inputs are IMDb's ``title.crew.tsv`` and ``name.basics.tsv``. Outputs, written next to
-the release facts, are:
+Inputs are IMDb's ``title.crew.tsv`` and ``name.basics.tsv`` and, optionally,
+``title.principals.tsv`` for the cast. Outputs, written next to the release facts, are:
 
 * ``dim_person.csv``: one row per person credited on at least one eligible title.
-* ``bridge_title_person.csv``: one row per title, person and role (director or writer).
+* ``bridge_title_person.csv``: one row per title, person and role (director, writer or
+  actor). ``billing_order`` is only filled for actors (1 is the first billed).
 
 Only credits whose title is an eligible release fact are kept, so every bridge row can
 reference ``fact_title_release``. The person key is the numeric part of the IMDb
 identifier (``nm0000001`` becomes 1), so it does not depend on file reading order.
+Actors and actresses share the role ``actor``; only the first ``CAST_LIMIT`` billed
+people of each title are kept to bound the size of the bridge.
 """
 import csv
 import hashlib
@@ -19,7 +22,10 @@ from pathlib import Path
 CREW_COLUMNS = ['tconst', 'directors', 'writers']
 NAME_COLUMNS = ['nconst', 'primaryName', 'birthYear', 'deathYear',
                 'primaryProfession', 'knownForTitles']
-ROLES = ('director', 'writer')
+PRINCIPAL_COLUMNS = ['tconst', 'ordering', 'nconst', 'category', 'job', 'characters']
+ROLES = ('director', 'writer', 'actor')
+CAST_CATEGORIES = frozenset({'actor', 'actress'})
+CAST_LIMIT = 5
 TITLE_ID = re.compile(r'tt[0-9]+')
 PERSON_ID = re.compile(r'nm[0-9]+')
 UNKNOWN = ('\\N', '')
@@ -70,12 +76,15 @@ def _provenance(path, download_date, url):
                 size_bytes=path.stat().st_size, download_date=download_date, url=url)
 
 
-def add_crew(output, crew_source, names_source, download_date):
+def add_crew(output, crew_source, names_source, download_date, *,
+             principals_source=None, principals_download_date=None):
     """Write dim_person.csv and bridge_title_person.csv into ``output``.
 
     ``output`` must already contain ``fact_title_release.csv``. Returns report entries.
     """
     date.fromisoformat(download_date)
+    principals_download_date = principals_download_date or download_date
+    date.fromisoformat(principals_download_date)
     output = Path(output)
 
     # Eligible titles are the ones already kept as release facts.
@@ -89,6 +98,10 @@ def add_crew(output, crew_source, names_source, download_date):
     counts = dict(crew_source_rows=0, crew_rows_without_eligible_title=0,
                   duplicate_credits_ignored=0, credits_without_person_record=0,
                   person_source_rows=0)
+    cast_counts = dict(principals_source_rows=0, principals_rows_other_categories=0,
+                       principals_rows_beyond_billing_limit=0,
+                       principals_rows_without_eligible_title=0,
+                       principals_duplicate_credits_ignored=0)
     pending = output / 'bridge_title_person.pending'
     seen_titles, needed = _Bitmap(), _Bitmap()
     try:
@@ -118,7 +131,39 @@ def add_crew(output, crew_source, names_source, download_date):
                             continue
                         credited.add((key, role))
                         needed.add(key)
-                        writer.writerow([title, key, role])
+                        writer.writerow([title, key, role, ''])
+
+            if principals_source is not None:
+                # The file must list each title in one contiguous block; this lets
+                # duplicate credits be detected without keeping every credit in memory.
+                seen_principal_titles, current, credited = _Bitmap(), None, set()
+                for title, ordering, person, category, *_ in _read_tsv(
+                        principals_source, PRINCIPAL_COLUMNS, 'principals'):
+                    if not TITLE_ID.fullmatch(title) or not PERSON_ID.fullmatch(person):
+                        raise ValueError(f'Malformed principals identifier: {title} / {person}')
+                    if not (ordering.isascii() and ordering.isdigit()):
+                        raise ValueError(f'Invalid principals ordering for {title}: {ordering}')
+                    if title != current:
+                        if not seen_principal_titles.add(int(title[2:])):
+                            raise ValueError('Principals are not grouped by title: ' + title)
+                        current, credited = title, set()
+                    cast_counts['principals_source_rows'] += 1
+                    if category not in CAST_CATEGORIES:
+                        cast_counts['principals_rows_other_categories'] += 1
+                        continue
+                    if int(ordering) > CAST_LIMIT:
+                        cast_counts['principals_rows_beyond_billing_limit'] += 1
+                        continue
+                    if int(title[2:]) not in eligible:
+                        cast_counts['principals_rows_without_eligible_title'] += 1
+                        continue
+                    key = int(person[2:])
+                    if key in credited:
+                        cast_counts['principals_duplicate_credits_ignored'] += 1
+                        continue
+                    credited.add(key)
+                    needed.add(key)
+                    writer.writerow([title, key, 'actor', int(ordering)])
 
         # Pass 2: names and birth years of the people who are needed.
         present, birth_unknown, birth_invalid = _Bitmap(), 0, 0
@@ -150,12 +195,12 @@ def add_crew(output, crew_source, names_source, download_date):
         with pending.open(encoding='utf-8', newline='') as source, \
                 (output / 'bridge_title_person.csv').open('w', encoding='utf-8', newline='') as target:
             writer = csv.writer(target)
-            writer.writerow(['title_id', 'person_key', 'role'])
-            for title, key, role in csv.reader(source):
+            writer.writerow(['title_id', 'person_key', 'role', 'billing_order'])
+            for title, key, role, billing in csv.reader(source):
                 if int(key) not in present:
                     counts['credits_without_person_record'] += 1
                     continue
-                writer.writerow([title, key, role])
+                writer.writerow([title, key, role, billing])
                 bridge_rows[role] += 1
                 if last_title.get(role) != title:
                     last_title[role] = title
@@ -163,7 +208,7 @@ def add_crew(output, crew_source, names_source, download_date):
     finally:
         pending.unlink(missing_ok=True)
 
-    return dict(
+    report = dict(
         **counts,
         person_members=present.count,
         person_birth_year_unknown=birth_unknown,
@@ -178,3 +223,13 @@ def add_crew(output, crew_source, names_source, download_date):
         names_provenance=_provenance(names_source, download_date,
                                      'https://datasets.imdbws.com/name.basics.tsv.gz'),
     )
+    if principals_source is not None:
+        report.update(
+            **cast_counts,
+            cast_billing_limit=CAST_LIMIT,
+            bridge_actor_rows=bridge_rows['actor'],
+            titles_with_actor=titles_with_role['actor'],
+            principals_provenance=_provenance(
+                principals_source, principals_download_date,
+                'https://datasets.imdbws.com/title.principals.tsv.gz'))
+    return report
