@@ -7,6 +7,7 @@ import unittest
 from pathlib import Path
 
 from scripts.build_warehouse import build_warehouse, open_warehouse, validate_warehouse
+from scripts.people_queries import PEOPLE_QUERIES
 from scripts.refine_dataset import build
 
 NAMES = ('nconst\tprimaryName\tbirthYear\tdeathYear\tprimaryProfession\tknownForTitles\n'
@@ -90,6 +91,21 @@ class PeopleWarehouseTests(unittest.TestCase):
         conn.execute("DELETE FROM bridge_title_person WHERE role = 'writer' AND person_key = 2")
         with self.assertRaises(ValueError):
             validate_warehouse(conn, report, minimum_release_facts=1)
+
+    def test_people_queries_run_and_return_expected_rows(self):
+        self.run_all()
+        conn = self.conn()
+        results = {name: conn.execute(sql).fetchall() for name, sql in PEOPLE_QUERIES.items()}
+        self.assertEqual(len(results), 5)
+        self.assertEqual(results['14. Seasons and episodes per series (episodes with known numbers)'],
+                         [('Show', 2, 1, 1)])
+        self.assertEqual(results['15. Most frequent leading actors (billing order 1)'], [('Eve Five', 1)])
+
+    def test_people_queries_run_on_an_empty_people_model(self):
+        self.run_all(people=False, episodes=False)
+        conn = self.conn()
+        for sql in PEOPLE_QUERIES.values():
+            self.assertEqual(conn.execute(sql).fetchall(), [])
 
     def test_sources_are_optional(self):
         self.run_all(people=False, episodes=False)

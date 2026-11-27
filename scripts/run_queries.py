@@ -6,6 +6,7 @@ from pathlib import Path
 from scripts.genre_queries import find_titles_by_genres, release_count_by_genres, series_counts_by_genres
 from scripts.build_warehouse import open_warehouse
 from scripts.paths import MEDIA, WAREHOUSE, PROJECT_ROOT
+from scripts.people_queries import PEOPLE_QUERIES
 from scripts.rating_queries import RATING_QUERIES, generate_rating_plots
 from scripts.runtime_diagnostics import investigate
 
@@ -133,6 +134,7 @@ def print_terminal_queries(conn: sqlite3.Connection) -> None:
     }
 
     queries.update(RATING_QUERIES)
+    queries.update(PEOPLE_QUERIES)
     results = {}
     for title, sql in queries.items():
         print(title)

@@ -492,6 +492,20 @@ The complete top 20 is in [Data_Analysis.md](docs/Data_Analysis.md). This is a p
 
 IMDb's published rating is already weighted. An equal-title mean answers a question about title ratings; weighting those values again by vote count would not reconstruct the raw mean of individual votes.
 
+### 5.12. Queries 11 to 15: credits, directors and series structure
+
+These queries use the person dimension, the role bridge and the episode table added in schema version 5. A title with several directors counts once for each of them, so the groups overlap and their totals must not be added together.
+
+| Query | Question | Notes |
+| --- | --- | --- |
+| 11 | Which directors have the most movies, and how are those movies rated? | Rating means use only rated movies. |
+| 12 | Which directors have the best mean rating with at least 5 movies of 1,000 votes? | The thresholds limit the effect of small samples; they are project choices. |
+| 13 | How many directors and movie credits are there per birth decade? | Only people with a known birth year; the rest are excluded, not estimated. |
+| 14 | How many episodes and seasons does each series have? | Episodes with unknown season or number are counted as episodes but not as seasons. |
+| 15 | Which actors are most often billed first? | Only the first five billed actors of each title are loaded. |
+
+Results are reproduced by `python -m scripts.run_queries` once the warehouse has been built with the crew, names, episode and principals files. Cast coverage is limited by design to the top five billed actors and the person identifiers come directly from IMDb, so no person-matching is needed.
+
 ## 6. Critical reflection about the advantages and shortcomings with respect to operational databases
 
 ### 6.1. Operational and analytical purposes
