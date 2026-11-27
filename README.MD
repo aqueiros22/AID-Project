@@ -229,7 +229,7 @@ These annual rows reconstruct intervals from the current extract. They are not o
 
 The persistent SQLite schema uses `STRICT` tables, PKs, FKs and CHECK constraints. A trigger restricts the series snapshot to `tvSeries` and `tvMiniSeries`. Indexes support filtering releases by type/year and genre combination, series snapshots by genre combination, and reverse genre membership lookups. Constraints and load-time reconciliation establish structural consistency; they do not prove the factual accuracy of source metadata.
 
-`warehouse_metadata` stores the ETL provenance and validation results. Schema version 4 prevents an older database from being silently used with the ratings model. These physical choices support the implementation but do not change the grain or meaning of the facts.
+`warehouse_metadata` stores the ETL provenance and validation results. Schema version 5 prevents an older database from being silently used with the ratings model. These physical choices support the implementation but do not change the grain or meaning of the facts.
 
 ## 4. Data sources selection. Extraction, transformation and loading.
 

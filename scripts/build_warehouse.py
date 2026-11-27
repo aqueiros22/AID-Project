@@ -12,13 +12,21 @@ from scripts.paths import REFINED, SCHEMA, WAREHOUSE
 TABLES = (
     'dim_year', 'dim_title_type', 'dim_genre_set', 'dim_audience', 'dim_genre',
     'bridge_genre_set_genre', 'fact_title_release', 'fact_series_year_snapshot',
-    'fact_title_rating_snapshot',
+    'fact_title_rating_snapshot', 'dim_person', 'bridge_title_person', 'title_episode',
 )
+# Tables that are only loaded when the ETL report says the optional sources were used.
+OPTIONAL_TABLES = {
+    'dim_person': 'person_members',
+    'bridge_title_person': 'bridge_title_person_rows',
+    'title_episode': 'episode_rows',
+}
 INDEXES = (
     'CREATE INDEX release_type_year ON fact_title_release (title_type_key, year_key)',
     'CREATE INDEX release_genre_set ON fact_title_release (genre_set_key)',
     'CREATE INDEX snapshot_genre_set ON fact_series_year_snapshot (genre_set_key)',
     'CREATE INDEX genre_membership_reverse ON bridge_genre_set_genre (genre_key, genre_set_key)',
+    'CREATE INDEX person_credits ON bridge_title_person (person_key, role, title_id)',
+    'CREATE INDEX episode_parent ON title_episode (parent_series_id)',
 )
 
 
@@ -30,7 +38,7 @@ def open_warehouse(database, *, readonly=True):
     mode = 'ro' if readonly else 'rw'
     conn = sqlite3.connect(database.as_uri() + f'?mode={mode}', uri=True)
     conn.execute('PRAGMA foreign_keys = ON')
-    if conn.execute('PRAGMA user_version').fetchone()[0] != 4:
+    if conn.execute('PRAGMA user_version').fetchone()[0] != 5:
         conn.close()
         raise ValueError('Unsupported warehouse schema. Rebuild with python -m scripts.build_warehouse.')
     return conn
@@ -49,8 +57,11 @@ def load_table(conn, source, table):
                 if len(values) != len(columns):
                     raise ValueError(f'{table}: invalid field count at CSV line {line}')
                 try:
-                    result = tuple(int(value) if col[2] == 'INTEGER' else value
-                                   for col, value in zip(columns, values))
+                    # An empty field is NULL in nullable (non-key) integer columns.
+                    result = tuple(
+                        None if value == '' and col[2] == 'INTEGER' and not col[3] and not col[5]
+                        else int(value) if col[2] == 'INTEGER' else value
+                        for col, value in zip(columns, values))
                 except ValueError as error:
                     raise ValueError(f'{table}: invalid integer at CSV line {line}') from error
                 if line % 1_000_000 == 0:
@@ -81,6 +92,7 @@ def validate_warehouse(conn, source_report, *, minimum_release_facts=10001):
         'fact_title_release': source_report['release_facts'],
         'fact_series_year_snapshot': source_report['snapshot_facts'],
         **{f'dim_{name}': count for name, count in source_report['dimension_members'].items()},
+        **{table: source_report.get(key) or 0 for table, key in OPTIONAL_TABLES.items()},
     }
     if counts != expected:
         raise ValueError(f'Warehouse row counts differ from ETL report: {counts} != {expected}')
@@ -132,6 +144,23 @@ def validate_warehouse(conn, source_report, *, minimum_release_facts=10001):
     '''))
     if actual_memberships != expected_memberships:
         raise ValueError('Genre bridge does not match genre combinations')
+    if source_report.get('person_members') is not None:
+        expected_roles = {'director': source_report['bridge_director_rows'],
+                          'writer': source_report['bridge_writer_rows'],
+                          'actor': source_report.get('bridge_actor_rows', 0)}
+        actual_roles = dict(conn.execute('SELECT role, COUNT(*) FROM bridge_title_person GROUP BY role'))
+        if actual_roles != {role: rows for role, rows in expected_roles.items() if rows}:
+            raise ValueError('Bridge role counts differ from ETL report')
+        if conn.execute('''
+            SELECT 1 FROM dim_person p
+            WHERE NOT EXISTS (SELECT 1 FROM bridge_title_person b WHERE b.person_key = p.person_key)
+            LIMIT 1
+        ''').fetchone():
+            raise ValueError('Person without any credit')
+    if source_report.get('episode_rows') is not None:
+        parents = conn.execute('SELECT COUNT(DISTINCT parent_series_id) FROM title_episode').fetchone()[0]
+        if parents != source_report['series_with_episodes']:
+            raise ValueError('Series with episodes differ from ETL report')
     first, last = conn.execute('SELECT MIN(year), MAX(year) FROM dim_year').fetchone()
     if (first, last) != (source_report['first_year'], source_report['cutoff_year']):
         raise ValueError('Year range differs from ETL report')
@@ -160,6 +189,9 @@ def build_warehouse(source, database, *, minimum_release_facts=10001):
         conn.executescript(SCHEMA.read_text(encoding='utf-8'))
         with conn:
             for table in TABLES:
+                if table in OPTIONAL_TABLES and report.get(OPTIONAL_TABLES[table]) is None:
+                    print(f'Skipping {table}: not produced by this ETL run.', flush=True)
+                    continue
                 print(f'Loading {table}...', flush=True)
                 load_table(conn, source, table)
             for index in INDEXES:

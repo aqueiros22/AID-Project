@@ -44,7 +44,7 @@ class RatingsTests(unittest.TestCase):
             build_warehouse(self.output, database, minimum_release_facts=1)
         conn = open_warehouse(database, readonly=False)
         self.addCleanup(conn.close)
-        self.assertEqual(conn.execute('PRAGMA user_version').fetchone()[0], 4)
+        self.assertEqual(conn.execute('PRAGMA user_version').fetchone()[0], 5)
         self.assertIsNone(conn.execute("SELECT name FROM sqlite_master WHERE name = 'dim_rating_extract'").fetchone())
         columns = conn.execute('PRAGMA table_info(fact_title_rating_snapshot)').fetchall()
         self.assertEqual([c[1] for c in columns if c[5]], ['title_id'])

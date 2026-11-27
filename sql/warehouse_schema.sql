@@ -1,6 +1,6 @@
 -- SQLite 3.37+; strict physical types. Dates are ISO-8601 TEXT.
 PRAGMA foreign_keys = ON;
-PRAGMA user_version = 4;
+PRAGMA user_version = 5;
 
 CREATE TABLE dim_year (
     year_key INTEGER PRIMARY KEY CHECK (year_key BETWEEN 1 AND 9999),
@@ -99,4 +99,32 @@ CREATE TABLE fact_title_rating_snapshot (
     average_rating REAL NOT NULL CHECK (average_rating BETWEEN 1 AND 10),
     num_votes INTEGER NOT NULL CHECK (num_votes > 0),
     rated_title_count INTEGER NOT NULL CHECK (rated_title_count = 1)
+) STRICT, WITHOUT ROWID;
+
+-- People credited on eligible titles. The key is the numeric part of the IMDb nconst.
+CREATE TABLE dim_person (
+    person_key INTEGER PRIMARY KEY CHECK (person_key > 0),
+    nconst TEXT NOT NULL UNIQUE
+        CHECK (nconst GLOB 'nm[0-9]*' AND CAST(substr(nconst, 3) AS INTEGER) = person_key),
+    person_name TEXT NOT NULL CHECK (length(person_name) > 0),
+    birth_year INTEGER CHECK (birth_year IS NULL OR birth_year BETWEEN 1 AND 9999)
+) STRICT;
+
+-- One row per title, person and role. billing_order is only set for actors (1 = first billed).
+CREATE TABLE bridge_title_person (
+    title_id TEXT NOT NULL REFERENCES fact_title_release (title_id),
+    person_key INTEGER NOT NULL REFERENCES dim_person (person_key),
+    role TEXT NOT NULL CHECK (role IN ('director', 'writer', 'actor')),
+    billing_order INTEGER CHECK (billing_order IS NULL OR billing_order > 0),
+    PRIMARY KEY (title_id, person_key, role),
+    CHECK ((role = 'actor') = (billing_order IS NOT NULL))
+) STRICT, WITHOUT ROWID;
+
+-- Series, season and episode numbers of episodes; numbers are NULL when unknown.
+CREATE TABLE title_episode (
+    title_id TEXT PRIMARY KEY NOT NULL REFERENCES fact_title_release (title_id),
+    parent_series_id TEXT NOT NULL REFERENCES fact_title_release (title_id),
+    season_number INTEGER CHECK (season_number IS NULL OR season_number >= 0),
+    episode_number INTEGER CHECK (episode_number IS NULL OR episode_number >= 0),
+    CHECK (title_id != parent_series_id)
 ) STRICT, WITHOUT ROWID;
