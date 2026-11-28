@@ -2,6 +2,35 @@
 
 This README follows the seven parts of the assignment and serves as the basis for the project report. It describes the implemented model, the ETL process and the measured analytical results. The persistent warehouse is [data/warehouse/warehouse.db](data/warehouse/warehouse.db); its physical schema is defined in [warehouse_schema.sql](sql/warehouse_schema.sql).
 
+> [!NOTE]
+> **Team status (updated 28/11/2026).** This note tracks work in progress for the group. Remove it before delivery.
+>
+> **Professor's suggested improvements and who is doing them**
+>
+> | # | Suggestion | Owner | Status |
+> | --- | --- | --- | --- |
+> | 1 | Review the slides on the bridge table | Germán | Assigned |
+> | 2 | Add the missing star schema for the required aggregation | Lucas | **Done, on `main`** (`f2051d3`) |
+> | 3 | Enrich the dataset (directors, writers, cast, episodes) | Germán | In progress on branch `enriquecer-modelo`, not yet merged |
+> | 4 | Remove the redundant TV-series fact table | Lucas | **Done, on `main`** (`f2051d3`) |
+>
+> **What changed in `f2051d3` (tasks 2 and 4)**
+>
+> - `fact_series_year_snapshot` is **removed**, together with its triggers. Each series is now stored once, in `fact_title_release`, with two new columns: `series_end_status` (`known` / `unknown` / `invalid`, NULL for non-series) and `end_year`. Queries 2 and 6, figure 2 and `series_counts_by_genres` evaluate intervals from these columns. On the same input files, queries 1–10 give **exactly the same results** as before the change; this was checked by running the old and the new pipeline side by side.
+> - **New star `fact_catalog_year_snapshot`**: an aggregate periodic snapshot (year x title type x genre combination x audience, all title types). Its measures are `new_title_count` (additive flow) and `cumulative_title_count` (year-end stock, semi-additive: sum across categories within one year, never across years). It is the model's aggregate fact with a semi-additive measure, as the assignment requires. It has a new **query 16** and a new **figure 9**.
+> - Schema `user_version` is now **5**; ETL snapshot semantics version is **3**. A warehouse built with older code is rejected: rebuild it with the commands in section 4.4.
+> - Sections 1–4, the Mermaid diagram, `docs/Report_Guidelines.md` and the tests (now 28) are updated.
+>
+> **Still to do**
+>
+> - **Germán:** rebase `enriquecer-modelo` on `main`. Expected conflicts are in `sql/warehouse_schema.sql` (bump `user_version` to **6**), `scripts/build_warehouse.py` (`TABLES`/`INDEXES`; `load_table` already turns empty fields into NULL for nullable columns), `scripts/refine_dataset.py` (`build()` and argparse) and README sections 1.2, 2.x and 3.x. Query numbers do not clash: the credits queries are 11–15 and the catalogue query is 16.
+> - **Final data refresh (everyone, before delivery):** as agreed on 27/11, everyone downloads the latest IMDb files (basics, ratings, crew, names, episode, principals), runs the full pipeline in section 4.4 with the correct `--*-download-date` values, and updates the numbers in this README. Places marked _(to be refreshed with the final download)_ still need values; the other figures currently refer to the 12/11 download. Figure 9 was generated from a later test download.
+> - Regenerate `docs/Data_Analysis.md` with `python -m scripts.analysis_report` after that refresh. It still shows the old series snapshot.
+> - `media/dimensional_model.svg` and `.pdf` still show the old model. Regenerate them with `python -m scripts.model_diagram` on a machine with Graphviz installed (`dot`). The Mermaid diagram below is already up to date.
+> - Ask the professor whether the catalogue snapshot is the aggregation intended in suggestion 2. A similar year-end catalogue fact existed before `73866ba`.
+>
+> **Running the pipeline:** the full rebuild (ETL, load and queries) takes about 20 minutes. `scripts/paths.py` expects `data/raw/title.basics.tsv` to be a file. If decompression created a folder with that name, pass `--source data/raw/title.basics.tsv/title.basics.tsv`.
+
 1. [Subject description. Assignment requirements.](#1-subject-description-assignment-requirements)
 2. [Planning: dimensional bus matrix, dimensions and facts dictionary.](#2-planning-dimensional-bus-matrix-dimensions-and-facts-dictionary)
 3. [Dimensional data model explained.](#3-dimensional-data-model-explained)
