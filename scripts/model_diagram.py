@@ -74,7 +74,7 @@ def export_graphviz(content, formats=('svg', 'pdf')):
             parent_ports.add((parent, key))
             lines.append(f'{parent}:{key}_out:e -> {child}:{key}:w '
                          f'[taillabel="{tail_label}", headlabel="0..N", labeldistance=2, style={style}];')
-    lines += ['{rank=same; fact_title_release; fact_series_year_snapshot; fact_title_rating_snapshot;}', '}']
+    lines += ['{rank=same; fact_title_release; fact_catalog_year_snapshot; fact_title_rating_snapshot;}', '}']
     dot = '\n'.join(lines).encode('utf-8')
     for format in formats:
         subprocess.run([executable, '-T' + format, '-o', str(MEDIA / f'dimensional_model.{format}')],

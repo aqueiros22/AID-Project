@@ -13,31 +13,40 @@ from scripts.runtime_diagnostics import investigate
 # Last full calendar year before the documented download date.
 LAST_COMPLETE_YEAR = 2025
 
-# Drill-across: each fact table is aggregated to the same grain (year) BEFORE being combined,
-# so there is no row multiplication. Releases are restricted to the snapshot's series types.
-SERIES_DRILL_ACROSS_SQL = """
-    WITH rel AS (
-        SELECT f.year_key, SUM(f.title_count) AS new_series
-        FROM fact_title_release f
-        JOIN dim_title_type t ON t.title_type_key = f.title_type_key
-        WHERE t.title_type IN ('tvSeries', 'tvMiniSeries')
-        GROUP BY f.year_key
-    ), snap AS (
-        SELECT year_key,
-               SUM(known_interval_series_count) AS known_intervals,
-               SUM(started_series_unknown_end_count) AS started_unknown_end
-        FROM fact_series_year_snapshot
-        GROUP BY year_key
-    )
+# Series intervals are evaluated from the end metadata on the release fact: every series
+# (series_end_status set) started by the reference year is a candidate. A known interval
+# covers the year inclusively; an unknown end only says the series had started. Invalid
+# ends still count as new series but in neither interval measure.
+SERIES_BY_YEAR_SQL = """
     SELECT y.year,
-           COALESCE(rel.new_series, 0) AS new_series,
-           COALESCE(snap.known_intervals, 0) AS known_intervals,
-           COALESCE(snap.started_unknown_end, 0) AS started_unknown_end
+           COALESCE(SUM(s.year_key = y.year_key), 0) AS new_series,
+           COALESCE(SUM(s.series_end_status = 'known' AND s.end_year >= y.year_key), 0) AS known_intervals,
+           COALESCE(SUM(s.series_end_status = 'unknown'), 0) AS started_unknown_end
     FROM dim_year y
-    LEFT JOIN rel ON rel.year_key = y.year_key
-    LEFT JOIN snap ON snap.year_key = y.year_key
-    WHERE y.year IN (1960, 1970, 1980, 1990, 2000, 2010, 2015, 2018, 2020, 2021, 2022, 2026)
+    LEFT JOIN fact_title_release s
+           ON s.series_end_status IS NOT NULL AND s.year_key <= y.year_key
+    WHERE y.year IN ({years})
+    GROUP BY y.year
     ORDER BY y.year;
+"""
+SERIES_YEARS_SQL = SERIES_BY_YEAR_SQL.format(
+    years='1960, 1970, 1980, 1990, 2000, 2010, 2015, 2018, 2020, 2021, 2022, 2026')
+
+# Periodic snapshot: stocks are summed across disjoint types WITHIN one year only.
+# The share is computed per year; adding stocks of different years would double count.
+CATALOG_STOCK_SQL = """
+    SELECT y.year,
+           t.title_type,
+           SUM(c.new_title_count) AS new_titles,
+           SUM(c.cumulative_title_count) AS catalog_stock,
+           ROUND(SUM(c.cumulative_title_count) * 100.0
+                 / SUM(SUM(c.cumulative_title_count)) OVER (PARTITION BY y.year), 2) AS pct_of_stock
+    FROM fact_catalog_year_snapshot c
+    JOIN dim_year y ON y.year_key = c.year_key
+    JOIN dim_title_type t ON t.title_type_key = c.title_type_key
+    WHERE y.year IN (1990, 2010, 2025)
+    GROUP BY y.year, t.title_type
+    ORDER BY y.year DESC, catalog_stock DESC;
 """
 
 # Per exact combination first, then through the bridge: a title with several genres counts
@@ -66,14 +75,15 @@ GENRE_MEMBERSHIP_SQL = """
 
 SERIES_BY_GENRE_SQL = """
     SELECT g.genre,
-           SUM(CASE WHEN f.year_key = 2010 THEN f.known_interval_series_count ELSE 0 END) AS known_2010,
-           SUM(CASE WHEN f.year_key = 2020 THEN f.known_interval_series_count ELSE 0 END) AS known_2020,
-           SUM(CASE WHEN f.year_key = 2020 THEN f.started_series_unknown_end_count ELSE 0 END) AS unknown_end_2020
-    FROM fact_series_year_snapshot f
+           SUM(f.series_end_status = 'known' AND f.year_key <= 2010 AND f.end_year >= 2010) AS known_2010,
+           SUM(f.series_end_status = 'known' AND f.end_year >= 2020) AS known_2020,
+           SUM(f.series_end_status = 'unknown') AS unknown_end_2020
+    FROM fact_title_release f
     JOIN bridge_genre_set_genre b ON b.genre_set_key = f.genre_set_key
     JOIN dim_genre g ON g.genre_key = b.genre_key
-    WHERE f.year_key IN (2010, 2020) AND g.genre <> 'Unknown'
+    WHERE f.series_end_status IN ('known', 'unknown') AND f.year_key <= 2020 AND g.genre <> 'Unknown'
     GROUP BY g.genre
+    HAVING known_2010 + known_2020 + unknown_end_2020 > 0
     ORDER BY known_2020 DESC
     LIMIT 8;
 """
@@ -97,7 +107,7 @@ def print_terminal_queries(conn: sqlite3.Connection) -> None:
             GROUP BY y.decade, t.title_type
             ORDER BY y.decade DESC, t.title_type;
         """,
-        "2. [Drill-across] New Series (releases) vs Known Intervals vs Started with Unknown End, by Year": SERIES_DRILL_ACROSS_SQL,
+        "2. [Series end metadata] New Series vs Known Intervals vs Started with Unknown End, by Year": SERIES_YEARS_SQL,
         "3. [Audience x Time x Title Type] Adult-Flagged Releases Across Decades by Format": """
             SELECT 
                 y.decade,
@@ -129,10 +139,11 @@ def print_terminal_queries(conn: sqlite3.Connection) -> None:
             ORDER BY missing_percentage DESC;
         """,
         "5. [Genre bridge] Movies: Individual-Genre Membership vs Exact Standalone Combination": GENRE_MEMBERSHIP_SQL.replace("LIMIT 8", "LIMIT 10"),
-        "6. [Snapshot x Genre bridge] Known Series Intervals by Individual Genre (2010 vs 2020)": SERIES_BY_GENRE_SQL,
+        "6. [Series end metadata x Genre bridge] Known Series Intervals by Individual Genre (2010 vs 2020)": SERIES_BY_GENRE_SQL,
     }
 
     queries.update(RATING_QUERIES)
+    queries["16. [Catalogue snapshot, semi-additive] Year-End Catalogue Stock and New Titles by Type"] = CATALOG_STOCK_SQL
     results = {}
     for title, sql in queries.items():
         print(title)
@@ -212,26 +223,15 @@ def generate_plots(conn: sqlite3.Connection, media_dir: Path) -> None:
     generate_runtime_plot(conn, media_dir)
 
     # --- Plot 2: New series vs known intervals vs started-with-unknown-end (Query 2) ---
-    # Three separate measures from two fact tables, never added together. The cumulative
-    # unknown-end count has its own panel and scale because it describes a different population.
-    rows_q2 = conn.execute("""
-        WITH rel AS (
-            SELECT f.year_key, SUM(f.title_count) AS n
-            FROM fact_title_release f JOIN dim_title_type t ON t.title_type_key = f.title_type_key
-            WHERE t.title_type IN ('tvSeries', 'tvMiniSeries') GROUP BY f.year_key
-        ), snap AS (
-            SELECT year_key, SUM(known_interval_series_count) AS k, SUM(started_series_unknown_end_count) AS u
-            FROM fact_series_year_snapshot GROUP BY year_key
-        )
-        SELECT y.year, COALESCE(rel.n, 0), COALESCE(snap.k, 0), COALESCE(snap.u, 0)
-        FROM dim_year y LEFT JOIN rel USING (year_key) LEFT JOIN snap USING (year_key)
-        WHERE y.year BETWEEN 1950 AND 2026 ORDER BY y.year;
-    """).fetchall()
+    # Three separate measures from the release fact's series end metadata, never added
+    # together. The cumulative unknown-end count has its own panel and scale.
+    rows_q2 = conn.execute(SERIES_BY_YEAR_SQL.format(
+        years='SELECT year FROM dim_year WHERE year BETWEEN 1950 AND 2026')).fetchall()
     yrs = [r[0] for r in rows_q2]
     fig, (ax_top, ax_bot) = plt.subplots(2, 1, figsize=(10, 7.5), sharex=True)
-    ax_top.plot(yrs, [r[1] / 1000 for r in rows_q2], linewidth=2.2, color="#1f77b4", label="New series released (release fact)")
-    ax_top.plot(yrs, [r[2] / 1000 for r in rows_q2], linewidth=2.2, color="#2ca02c", label="Known interval covers year (snapshot)")
-    ax_bot.plot(yrs, [r[3] / 1000 for r in rows_q2], linewidth=2.2, color="#ff7f0e", label="Started, end year unknown (snapshot, cumulative)")
+    ax_top.plot(yrs, [r[1] / 1000 for r in rows_q2], linewidth=2.2, color="#1f77b4", label="New series released")
+    ax_top.plot(yrs, [r[2] / 1000 for r in rows_q2], linewidth=2.2, color="#2ca02c", label="Known interval covers year")
+    ax_bot.plot(yrs, [r[3] / 1000 for r in rows_q2], linewidth=2.2, color="#ff7f0e", label="Started, end year unknown (cumulative)")
     for ax, ylabel in ((ax_top, "Series per year (thousands)"), (ax_bot, "Series (thousands)")):
         ax.axvline(LAST_COMPLETE_YEAR + 1, color="grey", linestyle=":", linewidth=1.5)
         ax.set_ylabel(ylabel)
@@ -361,7 +361,53 @@ def generate_plots(conn: sqlite3.Connection, media_dir: Path) -> None:
     plt.close(fig)
 
     generate_rating_plots(conn, media_dir)
-    print(f"All 8 plots exported to '{media_dir}/'!")
+    generate_catalog_plot(conn, media_dir)
+    print(f"All 9 plots exported to '{media_dir}/'!")
+
+
+def generate_catalog_plot(conn: sqlite3.Connection, media_dir: Path) -> None:
+    """Plot 9: year-end catalogue stock by title type (Query 16)."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    first_year, top_n = 1950, 5
+    rows = conn.execute("""
+        SELECT y.year, t.title_type, SUM(c.cumulative_title_count), SUM(c.new_title_count)
+        FROM fact_catalog_year_snapshot c
+        JOIN dim_year y ON y.year_key = c.year_key
+        JOIN dim_title_type t ON t.title_type_key = c.title_type_key
+        WHERE y.year BETWEEN ? AND ?
+        GROUP BY y.year, t.title_type
+    """, (first_year, LAST_COMPLETE_YEAR)).fetchall()
+    years = list(range(first_year, LAST_COMPLETE_YEAR + 1))
+    stock, flow = {}, {}
+    for year, title_type, cumulative, new in rows:
+        stock.setdefault(title_type, {})[year] = cumulative
+        flow.setdefault(title_type, {})[year] = new
+    ranked = sorted(stock, key=lambda name: stock[name].get(LAST_COMPLETE_YEAR, 0), reverse=True)
+    groups = [(name, [name]) for name in ranked[:top_n]] + [("Other types", ranked[top_n:])]
+    colors = ["#5265a8", "#267b83", "#c45328", "#78733a", "#9467bd", "#999999"]
+
+    fig, (ax_stock, ax_flow) = plt.subplots(1, 2, figsize=(12, 5.2))
+    ax_stock.stackplot(years, [[sum(stock[n].get(y, 0) for n in names) / 1e6 for y in years] for _, names in groups],
+                       labels=[label for label, _ in groups], colors=colors, alpha=.85)
+    ax_stock.set(title="Stock: titles in the catalogue at year-end", ylabel="Titles (millions)")
+    for (label, names), color in zip(groups, colors):
+        ax_flow.plot(years, [sum(flow[n].get(y, 0) for n in names) / 1000 for y in years], color=color, linewidth=1.8, label=label)
+    ax_flow.set(title="Flow: new titles starting in the year", ylabel="Titles (thousands)")
+    for axis in (ax_stock, ax_flow):
+        axis.set_xlim(first_year, LAST_COMPLETE_YEAR)
+        axis.set_ylim(bottom=0)
+        axis.set_xlabel("Reference year")
+        axis.grid(axis='y', linestyle='--', alpha=.3)
+    ax_stock.legend(loc="upper left", fontsize=9)
+    fig.suptitle("Catalogue snapshot: year-end stock vs annual flow by title type", fontweight="bold")
+    fig.text(.5, .015, f"Stocks add across types within one year, never across years. {LAST_COMPLETE_YEAR + 1} omitted (incomplete). "
+             "Counts reflect titles recorded in the current IMDb extract.", ha='center', fontsize=9)
+    fig.tight_layout(rect=(0, .05, 1, .94))
+    fig.savefig(media_dir / "9_catalog_stock_by_type.png")
+    plt.close(fig)
 
 
 if __name__ == "__main__":

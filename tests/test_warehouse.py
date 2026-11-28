@@ -62,29 +62,42 @@ class WarehouseTests(unittest.TestCase):
         conn = self.connect(readonly=False)
         row = list(conn.execute("SELECT * FROM fact_title_release WHERE title_id = 'tt1'").fetchone())
         invalid = [row.copy()]
-        for index, value in ((2, 9999), (1, None), (6, 0), (7, -1), (8, 0), (7, 1.5)):
+        # Year FK, NOT NULL title, measures, and series end consistency (status vs end year).
+        for index, value in ((2, 9999), (1, None), (6, 0), (7, -1), (8, 0), (7, 1.5),
+                             (9, 'unknown'), (9, 'ended'), (10, 2017), (10, None)):
             changed = row.copy()
             changed[0] = 'new-title'
             changed[index] = value
             invalid.append(changed)
         for values in invalid:
             with self.subTest(values=values), self.assertRaises(sqlite3.IntegrityError):
-                conn.execute('INSERT INTO fact_title_release VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)', values)
+                conn.execute('INSERT INTO fact_title_release VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', values)
+        movie = list(conn.execute("SELECT * FROM fact_title_release WHERE title_id = 'tt3'").fetchone())
+        self.assertEqual(movie[9:], [None, None])
+        movie[0], movie[9] = 'new-movie', 'unknown'
+        with self.assertRaisesRegex(sqlite3.IntegrityError, 'only for tvSeries'):
+            conn.execute('INSERT INTO fact_title_release VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', movie)
+        with self.assertRaisesRegex(sqlite3.IntegrityError, 'only for tvSeries'):
+            conn.execute("UPDATE fact_title_release SET series_end_status = NULL, end_year = NULL WHERE title_id = 'tt1'")
         with self.assertRaises(sqlite3.IntegrityError):
             conn.execute('DELETE FROM dim_year WHERE year_key = 2018')
         conn.rollback()
 
-    def test_snapshot_and_bridge_composite_keys_and_series_type(self):
+    def test_catalog_snapshot_and_bridge_composite_keys_and_checks(self):
         conn = self.connect(readonly=False)
-        row = list(conn.execute('SELECT * FROM fact_series_year_snapshot LIMIT 1').fetchone())
+        self.assertIsNone(conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE name = 'fact_series_year_snapshot'").fetchone())
+        row = list(conn.execute('SELECT * FROM fact_catalog_year_snapshot LIMIT 1').fetchone())
         with self.assertRaises(sqlite3.IntegrityError):
-            conn.execute('INSERT INTO fact_series_year_snapshot VALUES (?, ?, ?, ?, ?, ?)', row)
-        movie_key = conn.execute("SELECT title_type_key FROM dim_title_type WHERE title_type = 'movie'").fetchone()[0]
-        row[1] = movie_key
-        with self.assertRaisesRegex(sqlite3.IntegrityError, 'only tvSeries'):
-            conn.execute('INSERT INTO fact_series_year_snapshot VALUES (?, ?, ?, ?, ?, ?)', row)
-        with self.assertRaises(sqlite3.IntegrityError):
-            conn.execute('UPDATE fact_series_year_snapshot SET known_interval_series_count = -1')
+            conn.execute('INSERT INTO fact_catalog_year_snapshot VALUES (?, ?, ?, ?, ?, ?)', row)
+        for change in ('year_key = 9999', 'new_title_count = -1', 'cumulative_title_count = 0',
+                       'new_title_count = cumulative_title_count + 1'):
+            with self.subTest(change=change), self.assertRaises(sqlite3.IntegrityError):
+                conn.execute(f'UPDATE fact_catalog_year_snapshot SET {change}')
+        # Stock at cutoff equals the release population; flows sum to it as well.
+        self.assertEqual(conn.execute('''
+            SELECT SUM(new_title_count), SUM(CASE WHEN year_key = 2021 THEN cumulative_title_count END)
+            FROM fact_catalog_year_snapshot''').fetchone(), (3, 3))
         pair = conn.execute('SELECT * FROM bridge_genre_set_genre LIMIT 1').fetchone()
         for values in (pair, (pair[0], 9999)):
             with self.assertRaises(sqlite3.IntegrityError):
@@ -112,6 +125,15 @@ class WarehouseTests(unittest.TestCase):
             build_warehouse(self.refined, self.database, minimum_release_facts=1)
         self.assertEqual(previous, hashlib.sha256(self.database.read_bytes()).hexdigest())
 
+    def test_inconsistent_series_or_catalog_controls_are_rejected(self):
+        conn = self.connect()
+        for key, message in (('unknown_end_series_years', 'Series end metadata'),
+                             ('known_end_series_at_cutoff', 'Series end metadata'),
+                             ('catalog_snapshot_facts', 'row counts')):
+            report = dict(self.report, **{key: self.report[key] + 1})
+            with self.subTest(key=key), self.assertRaisesRegex(ValueError, message):
+                validate_warehouse(conn, report, minimum_release_facts=1)
+
     def test_missing_database_is_not_silently_created(self):
         missing = self.database.with_name('missing.db')
         with self.assertRaisesRegex(FileNotFoundError, 'build_warehouse'):
@@ -120,7 +142,7 @@ class WarehouseTests(unittest.TestCase):
 
     def test_old_schema_and_snapshot_semantics_are_rejected(self):
         old_report = self.report.copy()
-        old_report.pop('snapshot_semantics_version')
+        old_report['snapshot_semantics_version'] = 2
         with self.assertRaisesRegex(ValueError, 'Outdated snapshot semantics'):
             validate_warehouse(self.connect(), old_report, minimum_release_facts=1)
         conn = sqlite3.connect(self.database)

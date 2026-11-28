@@ -2,13 +2,13 @@
 
 The maintained model and ETL description are in [README](../README.MD); current results are in [Data Analysis](Data_Analysis.md).
 
-Use all three facts: title releases, reconstructed annual series interval information, and current title ratings. Share year, type, genre combination and audience dimensions. The rating fact has title_id as its sole primary key; the download date and file hash belong to ETL provenance, not an extraction dimension. Individual genres use the shared bridge.
+Use all three facts: title releases (which also carry series end status and end year), the year-end catalogue snapshot, and current title ratings. There is no separate series fact: interval questions are evaluated from the release fact. Share year, type, genre combination and audience dimensions. The rating fact has title_id as its sole primary key; the download date and file hash belong to ETL provenance, not an extraction dimension. Individual genres use the shared bridge.
 
 State that title.basics.tsv and title.ratings.tsv were downloaded from IMDb on **12/11/2026**, as supplied by the author. Cite the official download URLs and preserve hashes and sizes. The previous professor-provided data.tsv is a reference, not the active default input.
 
-Keep known intervals and unknown-end counts separate; neither establishes actual airing. Distinguish reconstructed interval snapshots from ratings observed in an extract. Never sum accumulated votes across extracts, convert missing ratings to zero, or describe release-cohort ratings as historical opinions. Show coverage and sample sizes beside rating means; genre groups overlap. Ranking thresholds are project choices, not official IMDb rankings.
+Keep known intervals and unknown-end counts separate; neither establishes actual airing. Distinguish reconstructed catalogue stocks and intervals from ratings observed in an extract. Catalogue stocks are semi-additive: sum them across categories within one year, never across years. Never sum accumulated votes across extracts, convert missing ratings to zero, or describe release-cohort ratings as historical opinions. Show coverage and sample sizes beside rating means; genre groups overlap. Ranking thresholds are project choices, not official IMDb rankings.
 
-Regenerate analysis_results.json, the eight figures and Data_Analysis.md after a successful warehouse rebuild. Discuss measured results and limitations rather than reusing statistics from the previous extract. Schema version is 4; series semantics version remains 2. Tests cover invalid/duplicate ratings, unmatched titles, coverage denominators, bridge multiplicity and publication failure recovery.
+Regenerate analysis_results.json, the nine figures and Data_Analysis.md after a successful warehouse rebuild. Discuss measured results and limitations rather than reusing statistics from the previous extract. Schema version is 5; snapshot semantics version is 3. Tests cover invalid/duplicate ratings, unmatched titles, coverage denominators, bridge multiplicity and publication failure recovery.
 
 For the model diagram, show attributes, PK/FK/UK flags, composite keys and physical `1 : 0..N` cardinalities. Regenerate Mermaid and optional Graphviz SVG/PDF exports using `python -m scripts.model_diagram`; do not draw a physical FK between release and rating facts.
 

@@ -1,6 +1,6 @@
 -- SQLite 3.37+; strict physical types. Dates are ISO-8601 TEXT.
 PRAGMA foreign_keys = ON;
-PRAGMA user_version = 4;
+PRAGMA user_version = 5;
 
 CREATE TABLE dim_year (
     year_key INTEGER PRIMARY KEY CHECK (year_key BETWEEN 1 AND 9999),
@@ -47,38 +47,47 @@ CREATE TABLE fact_title_release (
     title_count INTEGER NOT NULL CHECK (title_count = 1),
     runtime_minutes INTEGER NOT NULL CHECK (runtime_minutes >= 0),
     runtime_known_count INTEGER NOT NULL CHECK (runtime_known_count IN (0, 1)),
+    -- Series end metadata. NULL status for non-series; end_year only for a valid known end.
+    -- end_year is a plain attribute, not an FK: known ends may lie after the cutoff year.
+    series_end_status TEXT CHECK (series_end_status IN ('known', 'unknown', 'invalid')),
+    end_year INTEGER CHECK (end_year BETWEEN 1 AND 9999),
     CHECK ((runtime_known_count = 0 AND runtime_minutes = 0)
-        OR (runtime_known_count = 1 AND runtime_minutes > 0))
+        OR (runtime_known_count = 1 AND runtime_minutes > 0)),
+    CHECK ((series_end_status = 'known') = (end_year IS NOT NULL)),
+    CHECK (end_year IS NULL OR end_year >= year_key)
 ) STRICT;
 
-CREATE TABLE fact_series_year_snapshot (
+CREATE TRIGGER release_series_end_insert
+BEFORE INSERT ON fact_title_release
+WHEN (NEW.series_end_status IS NOT NULL) != COALESCE((
+        SELECT title_type IN ('tvSeries', 'tvMiniSeries')
+        FROM dim_title_type WHERE title_type_key = NEW.title_type_key), 0)
+BEGIN
+    SELECT RAISE(ABORT, 'Series end status is set only for tvSeries and tvMiniSeries');
+END;
+
+CREATE TRIGGER release_series_end_update
+BEFORE UPDATE OF title_type_key, series_end_status ON fact_title_release
+WHEN (NEW.series_end_status IS NOT NULL) != COALESCE((
+        SELECT title_type IN ('tvSeries', 'tvMiniSeries')
+        FROM dim_title_type WHERE title_type_key = NEW.title_type_key), 0)
+BEGIN
+    SELECT RAISE(ABORT, 'Series end status is set only for tvSeries and tvMiniSeries');
+END;
+
+-- Periodic snapshot of the catalogue at each reference year-end (all title types).
+-- new_title_count is a flow (additive); cumulative_title_count is a stock: additive
+-- across disjoint categories within one year, never across years.
+CREATE TABLE fact_catalog_year_snapshot (
     year_key INTEGER NOT NULL REFERENCES dim_year (year_key),
     title_type_key INTEGER NOT NULL REFERENCES dim_title_type (title_type_key),
     genre_set_key INTEGER NOT NULL REFERENCES dim_genre_set (genre_set_key),
     audience_key INTEGER NOT NULL REFERENCES dim_audience (audience_key),
-    -- Known interval covers the year; does not prove episodes aired that year.
-    known_interval_series_count INTEGER NOT NULL CHECK (known_interval_series_count >= 0),
-    -- Started by the year with missing end; actual airing status is indeterminate.
-    started_series_unknown_end_count INTEGER NOT NULL CHECK (started_series_unknown_end_count >= 0),
+    new_title_count INTEGER NOT NULL CHECK (new_title_count >= 0),
+    cumulative_title_count INTEGER NOT NULL CHECK (cumulative_title_count > 0),
     PRIMARY KEY (year_key, title_type_key, genre_set_key, audience_key),
-    CHECK (known_interval_series_count + started_series_unknown_end_count > 0)
+    CHECK (cumulative_title_count >= new_title_count)
 ) STRICT, WITHOUT ROWID;
-
-CREATE TRIGGER snapshot_series_type_insert
-BEFORE INSERT ON fact_series_year_snapshot
-WHEN (SELECT title_type FROM dim_title_type WHERE title_type_key = NEW.title_type_key)
-     NOT IN ('tvSeries', 'tvMiniSeries')
-BEGIN
-    SELECT RAISE(ABORT, 'Snapshot supports only tvSeries and tvMiniSeries');
-END;
-
-CREATE TRIGGER snapshot_series_type_update
-BEFORE UPDATE OF title_type_key ON fact_series_year_snapshot
-WHEN (SELECT title_type FROM dim_title_type WHERE title_type_key = NEW.title_type_key)
-     NOT IN ('tvSeries', 'tvMiniSeries')
-BEGIN
-    SELECT RAISE(ABORT, 'Snapshot supports only tvSeries and tvMiniSeries');
-END;
 
 -- Operational metadata, not an additional dimensional fact table.
 CREATE TABLE warehouse_metadata (

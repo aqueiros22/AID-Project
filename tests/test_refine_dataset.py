@@ -1,4 +1,4 @@
-"""Boundary and reconciliation checks for annual series snapshots."""
+"""Boundary and reconciliation checks for series end metadata and the catalogue snapshot."""
 import contextlib
 import csv
 import io
@@ -14,7 +14,7 @@ from scripts.refine_dataset import build
 from scripts.genre_queries import find_titles_by_genres, release_count_by_genres, series_counts_by_genres
 
 
-class SeriesSnapshotTests(unittest.TestCase):
+class SeriesAndCatalogTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
@@ -53,13 +53,14 @@ class SeriesSnapshotTests(unittest.TestCase):
         with (self.output / f'{table}.csv').open(encoding='utf-8', newline='') as handle:
             return list(csv.DictReader(handle))
 
-    def test_snapshot_matches_direct_interval_membership(self):
+    def test_series_end_metadata_matches_direct_interval_membership(self):
         self.output.mkdir()
-        legacy = self.output / 'fact_year_end_catalog.csv'
-        legacy.write_text('obsolete generated fact\n', encoding='utf-8')
+        legacy = [self.output / 'fact_year_end_catalog.csv', self.output / 'fact_series_year_snapshot.csv']
+        for path in legacy:
+            path.write_text('obsolete generated fact\n', encoding='utf-8')
         report = self.run_build(minimum_release_facts=1)
-        self.assertFalse(legacy.exists())
-        releases = self.rows('fact_title_release')
+        self.assertFalse(any(path.exists() for path in legacy))
+        releases = {row['title_id']: row for row in self.rows('fact_title_release')}
         self.assertEqual(len(releases), 11)
         self.assertEqual(report['series_excluded_invalid_end_year'], 3)
         self.assertEqual(report['series_with_known_end'], 4)
@@ -67,48 +68,62 @@ class SeriesSnapshotTests(unittest.TestCase):
         self.assertEqual(report['known_end_series_at_cutoff'], 1)
         self.assertEqual(report['unknown_end_series_at_cutoff'], 2)
 
-        dimensions = {}
-        for name in ('title_type', 'genre_set', 'audience', 'year'):
-            dimensions[name] = {row[f'{name}_key']: row[name] for row in self.rows(f'dim_{name}')}
+        # Missing ends stay empty, not invented cutoff ends; ends after cutoff are kept.
+        expected_end = {
+            'tt1': ('known', '2020'), 'tt2': ('known', '2019'), 'tt3': ('unknown', ''),
+            'tt4': ('unknown', ''), 'tt5': ('known', '2028'), 'tt6': ('invalid', ''),
+            'tt7': ('invalid', ''), 'tt8': ('invalid', ''), 'tt9': ('', ''), 'tt10': ('', ''),
+            'tt12': ('unknown', ''), 'tt13': ('known', '2018'),
+        }
+        expected_end = {k: v for k, v in expected_end.items() if k in releases}
+        self.assertEqual({k: (r['series_end_status'], r['end_year']) for k, r in releases.items()}, expected_end)
+
+        # Reporting-year controls equal a direct enumeration of the intervals.
+        intervals = [
+            (2018, 2020, False), (2019, 2019, False), (2019, None, True),
+            (2020, None, True), (2020, 2028, False), (2018, 2018, False),
+        ]
+        known = sum(min(end, 2021) - start + 1 for start, end, unknown in intervals if not unknown)
+        unknown = sum(2021 - start + 1 for start, end, unknown in intervals if unknown)
+        self.assertEqual((report['known_end_series_years'], report['unknown_end_series_years']), (known, unknown))
+        self.assertEqual(report['snapshot_semantics_version'], 3)
+        self.assertIn('status indeterminate', report['series_end_rule'])
+        self.assertIn('do not infer continued airing', report['missing_end_policy'])
+
+    def test_catalog_snapshot_is_running_sum_of_releases(self):
+        report = self.run_build(minimum_release_facts=1)
+        dimensions = {name: {row[f'{name}_key']: row[name] for row in self.rows(f'dim_{name}')}
+                      for name in ('title_type', 'genre_set')}
         actual = {}
-        for row in self.rows('fact_series_year_snapshot'):
-            for name in dimensions:
-                self.assertIn(row[f'{name}_key'], dimensions[name])
+        for row in self.rows('fact_catalog_year_snapshot'):
             key = (int(row['year_key']), dimensions['title_type'][row['title_type_key']],
                    dimensions['genre_set'][row['genre_set_key']])
             self.assertNotIn(key, actual)
-            counts = (int(row['known_interval_series_count']), int(row['started_series_unknown_end_count']))
-            self.assertGreater(sum(counts), 0)
-            actual[key] = counts
-
-        # Direct enumeration: missing ends remain None, not invented cutoff ends.
-        intervals = [
-            ('tvSeries', 'Drama', 2018, 2020, False),
-            ('tvMiniSeries', 'Comedy', 2019, 2019, False),
-            ('tvSeries', 'Drama', 2019, None, True),
-            ('tvMiniSeries', 'Comedy', 2020, None, True),
-            ('tvSeries', 'Drama', 2020, 2028, False),
-            ('tvMiniSeries', 'Comedy', 2018, 2018, False),
-        ]
+            actual[key] = (int(row['new_title_count']), int(row['cumulative_title_count']))
+        # Direct enumeration from the eligible source titles (all audiences are not adult).
+        eligible = [(t, g, int(start)) for _, t, start, _, g in self.titles
+                    if start.isdigit() and int(start) <= 2021]
         expected = {}
         for year in range(2017, 2022):
-            for title_type, genre in {('tvSeries', 'Drama'), ('tvMiniSeries', 'Comedy')}:
-                known = sum(t == title_type and g == genre and end is not None and start <= year <= end
-                            for t, g, start, end, unknown in intervals)
-                unknown = sum(t == title_type and g == genre and start <= year and unknown
-                              for t, g, start, end, unknown in intervals)
-                if known + unknown:
-                    expected[(year, title_type, genre)] = (known, unknown)
+            for title_type, genre in {(t, g) for t, g, _ in eligible}:
+                new = sum((t, g, y) == (title_type, genre, year) for t, g, y in eligible)
+                stock = sum((t, g) == (title_type, genre) and y <= year for t, g, y in eligible)
+                if stock:
+                    expected[(year, title_type, genre)] = (new, stock)
         self.assertEqual(actual, expected)
-        self.assertEqual(report['snapshot_semantics_version'], 2)
-        self.assertIn('status indeterminate', report['snapshot_rule'])
-        self.assertIn('do not infer continued airing', report['missing_end_policy'])
+        self.assertEqual(report['catalog_snapshot_facts'], len(expected))
+        self.assertEqual(report['catalog_titles_at_cutoff'], report['release_facts'])
+        self.assertEqual(report['catalog_new_titles_total'], report['release_facts'])
 
-    def test_no_series_produces_empty_snapshot(self):
+    def test_no_series_leaves_series_end_metadata_empty(self):
         report = self.run_build(cutoff=2017, minimum_release_facts=1)
         self.assertEqual(report['release_facts'], 1)
-        self.assertEqual(report['snapshot_facts'], 0)
-        self.assertEqual(self.rows('fact_series_year_snapshot'), [])
+        self.assertEqual(report['series_candidates'], 0)
+        [release] = self.rows('fact_title_release')
+        self.assertEqual((release['series_end_status'], release['end_year']), ('', ''))
+        self.assertEqual(self.rows('fact_catalog_year_snapshot'),
+                         [{'year_key': '2017', 'title_type_key': '1', 'genre_set_key': '1', 'audience_key': '1',
+                           'new_title_count': '1', 'cumulative_title_count': '1'}])
 
     def test_default_fact_threshold_is_enforced(self):
         with self.assertRaisesRegex(ValueError, '10,001'):

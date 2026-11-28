@@ -37,14 +37,16 @@ erDiagram
         INTEGER title_count
         INTEGER runtime_minutes
         INTEGER runtime_known_count
+        TEXT series_end_status
+        INTEGER end_year
     }
-    fact_series_year_snapshot {
+    fact_catalog_year_snapshot {
         INTEGER year_key PK, FK
         INTEGER title_type_key PK, FK
         INTEGER genre_set_key PK, FK
         INTEGER audience_key PK, FK
-        INTEGER known_interval_series_count
-        INTEGER started_series_unknown_end_count
+        INTEGER new_title_count
+        INTEGER cumulative_title_count
     }
     fact_title_rating_snapshot {
         TEXT title_id PK
@@ -62,10 +64,10 @@ erDiagram
     dim_title_type ||..o{ fact_title_release : "title_type_key"
     dim_genre_set ||..o{ fact_title_release : "genre_set_key"
     dim_audience ||..o{ fact_title_release : "audience_key"
-    dim_year ||--o{ fact_series_year_snapshot : "year_key"
-    dim_title_type ||--o{ fact_series_year_snapshot : "title_type_key"
-    dim_genre_set ||--o{ fact_series_year_snapshot : "genre_set_key"
-    dim_audience ||--o{ fact_series_year_snapshot : "audience_key"
+    dim_year ||--o{ fact_catalog_year_snapshot : "year_key"
+    dim_title_type ||--o{ fact_catalog_year_snapshot : "title_type_key"
+    dim_genre_set ||--o{ fact_catalog_year_snapshot : "genre_set_key"
+    dim_audience ||--o{ fact_catalog_year_snapshot : "audience_key"
     dim_year ||..o{ fact_title_rating_snapshot : "year_key"
     dim_title_type ||..o{ fact_title_rating_snapshot : "title_type_key"
     dim_genre_set ||..o{ fact_title_rating_snapshot : "genre_set_key"

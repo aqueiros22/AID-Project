@@ -11,13 +11,15 @@ from scripts.paths import REFINED, SCHEMA, WAREHOUSE
 
 TABLES = (
     'dim_year', 'dim_title_type', 'dim_genre_set', 'dim_audience', 'dim_genre',
-    'bridge_genre_set_genre', 'fact_title_release', 'fact_series_year_snapshot',
+    'bridge_genre_set_genre', 'fact_title_release', 'fact_catalog_year_snapshot',
     'fact_title_rating_snapshot',
 )
 INDEXES = (
     'CREATE INDEX release_type_year ON fact_title_release (title_type_key, year_key)',
     'CREATE INDEX release_genre_set ON fact_title_release (genre_set_key)',
-    'CREATE INDEX snapshot_genre_set ON fact_series_year_snapshot (genre_set_key)',
+    'CREATE INDEX release_series_end ON fact_title_release (series_end_status, year_key, end_year) '
+    'WHERE series_end_status IS NOT NULL',
+    'CREATE INDEX catalog_genre_set ON fact_catalog_year_snapshot (genre_set_key)',
     'CREATE INDEX genre_membership_reverse ON bridge_genre_set_genre (genre_key, genre_set_key)',
 )
 
@@ -30,7 +32,7 @@ def open_warehouse(database, *, readonly=True):
     mode = 'ro' if readonly else 'rw'
     conn = sqlite3.connect(database.as_uri() + f'?mode={mode}', uri=True)
     conn.execute('PRAGMA foreign_keys = ON')
-    if conn.execute('PRAGMA user_version').fetchone()[0] != 4:
+    if conn.execute('PRAGMA user_version').fetchone()[0] != 5:
         conn.close()
         raise ValueError('Unsupported warehouse schema. Rebuild with python -m scripts.build_warehouse.')
     return conn
@@ -49,8 +51,11 @@ def load_table(conn, source, table):
                 if len(values) != len(columns):
                     raise ValueError(f'{table}: invalid field count at CSV line {line}')
                 try:
-                    result = tuple(int(value) if col[2] == 'INTEGER' else value
-                                   for col, value in zip(columns, values))
+                    # An empty field is NULL in nullable (non-key) columns.
+                    result = tuple(
+                        None if value == '' and not col[3] and not col[5]
+                        else int(value) if col[2] == 'INTEGER' else value
+                        for col, value in zip(columns, values))
                 except ValueError as error:
                     raise ValueError(f'{table}: invalid integer at CSV line {line}') from error
                 if line % 1_000_000 == 0:
@@ -63,7 +68,7 @@ def load_table(conn, source, table):
 
 def validate_warehouse(conn, source_report, *, minimum_release_facts=10001):
     """Reconcile stored rows and measures with the ETL's independent controls."""
-    if source_report.get('snapshot_semantics_version') != 2:
+    if source_report.get('snapshot_semantics_version') != 3:
         raise ValueError('Outdated snapshot semantics: regenerate CSVs with python -m scripts.refine_dataset')
     if conn.execute('PRAGMA foreign_keys').fetchone()[0] != 1:
         raise ValueError('Foreign key enforcement is disabled')
@@ -79,7 +84,7 @@ def validate_warehouse(conn, source_report, *, minimum_release_facts=10001):
         'dim_year': source_report['year_members'],
         'bridge_genre_set_genre': source_report['genre_bridge_rows'],
         'fact_title_release': source_report['release_facts'],
-        'fact_series_year_snapshot': source_report['snapshot_facts'],
+        'fact_catalog_year_snapshot': source_report['catalog_snapshot_facts'],
         **{f'dim_{name}': count for name, count in source_report['dimension_members'].items()},
     }
     if counts != expected:
@@ -104,26 +109,76 @@ def validate_warehouse(conn, source_report, *, minimum_release_facts=10001):
            OR r.audience_key != f.audience_key LIMIT 1
     """).fetchone():
         raise ValueError('Rating dimensions differ from eligible release')
-    snapshot_totals = conn.execute('''
-        SELECT COALESCE(SUM(known_interval_series_count), 0),
-               COALESCE(SUM(started_series_unknown_end_count), 0)
-        FROM fact_series_year_snapshot
-    ''').fetchone()
-    final_totals = conn.execute('''
-        SELECT COALESCE(SUM(known_interval_series_count), 0),
-               COALESCE(SUM(started_series_unknown_end_count), 0)
-        FROM fact_series_year_snapshot WHERE year_key = ?
-    ''', (source_report['cutoff_year'],)).fetchone()
-    if snapshot_totals != (source_report['known_end_series_years'], source_report['unknown_end_series_years']):
-        raise ValueError('Snapshot reporting-year memberships differ from ETL report')
-    if final_totals != (source_report['known_end_series_at_cutoff'], source_report['unknown_end_series_at_cutoff']):
-        raise ValueError('Final snapshot differs from ETL report')
+    cutoff = source_report['cutoff_year']
+    # Series end metadata: the same reporting-year controls the old series snapshot
+    # carried, recomputed from the release fact that the series queries now use.
+    series_controls = conn.execute('''
+        SELECT COALESCE(SUM(series_end_status = 'known'), 0),
+               COALESCE(SUM(series_end_status = 'unknown'), 0),
+               COALESCE(SUM(series_end_status = 'invalid'), 0),
+               COALESCE(SUM(CASE WHEN series_end_status = 'known'
+                                 THEN MIN(end_year, :cutoff) - year_key + 1 END), 0),
+               COALESCE(SUM(CASE WHEN series_end_status = 'unknown'
+                                 THEN :cutoff - year_key + 1 END), 0),
+               COALESCE(SUM(series_end_status = 'known' AND end_year >= :cutoff), 0),
+               COALESCE(SUM(series_end_status = 'unknown'), 0)
+        FROM fact_title_release WHERE series_end_status IS NOT NULL
+    ''', {'cutoff': cutoff}).fetchone()
+    if series_controls != tuple(source_report[name] for name in (
+            'series_with_known_end', 'series_with_unknown_end', 'series_excluded_invalid_end_year',
+            'known_end_series_years', 'unknown_end_series_years',
+            'known_end_series_at_cutoff', 'unknown_end_series_at_cutoff')):
+        raise ValueError('Series end metadata differs from ETL report')
     if conn.execute('''
-        SELECT 1 FROM fact_series_year_snapshot f
+        SELECT 1 FROM fact_title_release f
         JOIN dim_title_type t USING (title_type_key)
-        WHERE t.title_type NOT IN ('tvSeries', 'tvMiniSeries') LIMIT 1
+        WHERE (f.series_end_status IS NOT NULL) != (t.title_type IN ('tvSeries', 'tvMiniSeries')) LIMIT 1
     ''').fetchone():
-        raise ValueError('Non-series type in series snapshot')
+        raise ValueError('Series end status on a non-series type, or missing on a series')
+    # Catalogue snapshot: flows equal releases per year and category, and each
+    # stock equals the previous year's stock plus that year's flow.
+    catalog_totals = conn.execute('''
+        SELECT COALESCE(SUM(new_title_count), 0),
+               COALESCE(SUM(CASE WHEN year_key = ? THEN cumulative_title_count END), 0)
+        FROM fact_catalog_year_snapshot
+    ''', (cutoff,)).fetchone()
+    if catalog_totals != (source_report['release_facts'], source_report['release_facts']):
+        raise ValueError('Catalogue snapshot totals differ from release facts')
+    if conn.execute('''
+        WITH rel AS (
+            SELECT year_key, title_type_key, genre_set_key, audience_key, SUM(title_count) AS n
+            FROM fact_title_release GROUP BY 1, 2, 3, 4
+        ), snap AS (
+            SELECT year_key, title_type_key, genre_set_key, audience_key, new_title_count AS n
+            FROM fact_catalog_year_snapshot WHERE new_title_count > 0
+        )
+        SELECT 1 FROM (SELECT * FROM rel EXCEPT SELECT * FROM snap)
+        UNION ALL
+        SELECT 1 FROM (SELECT * FROM snap EXCEPT SELECT * FROM rel)
+        LIMIT 1
+    ''').fetchone():
+        raise ValueError('Catalogue snapshot flows differ from release facts')
+    if conn.execute('''
+        SELECT 1 FROM (
+            SELECT year_key, cumulative_title_count, new_title_count,
+                   LAG(year_key) OVER w AS previous_year,
+                   LAG(cumulative_title_count) OVER w AS previous_stock
+            FROM fact_catalog_year_snapshot
+            WINDOW w AS (PARTITION BY title_type_key, genre_set_key, audience_key ORDER BY year_key)
+        )
+        WHERE cumulative_title_count != COALESCE(previous_stock, 0) + new_title_count
+           OR (previous_year IS NOT NULL AND previous_year != year_key - 1)
+           OR (previous_year IS NULL AND new_title_count != cumulative_title_count)
+        LIMIT 1
+    ''').fetchone():
+        raise ValueError('Catalogue snapshot stock is not the running sum of its flows')
+    if conn.execute('''
+        SELECT 1 FROM (
+            SELECT MAX(year_key) AS last_year FROM fact_catalog_year_snapshot
+            GROUP BY title_type_key, genre_set_key, audience_key
+        ) WHERE last_year != ? LIMIT 1
+    ''', (cutoff,)).fetchone():
+        raise ValueError('Catalogue snapshot category does not continue through cutoff')
     genre_sets = dict(conn.execute('SELECT genre_set_key, genre_set FROM dim_genre_set'))
     expected_memberships = {(key, genre) for key, label in genre_sets.items() for genre in label.split(',')}
     actual_memberships = set(conn.execute('''
@@ -138,9 +193,9 @@ def validate_warehouse(conn, source_report, *, minimum_release_facts=10001):
     return {
         'row_counts': counts,
         'foreign_keys': 'ok', 'integrity': 'ok', 'control_totals': 'ok',
-        'genre_memberships': 'ok', 'series_types': 'ok',
+        'genre_memberships': 'ok', 'series_end_metadata': 'ok', 'catalog_snapshot': 'ok',
         'cutoff_year': source_report['cutoff_year'],
-        'snapshot_semantics_version': 2,
+        'snapshot_semantics_version': 3,
     }
 
 

@@ -1,4 +1,4 @@
-"""Build releases, annual series intervals and an IMDb ratings extract."""
+"""Build releases (with series end metadata), an annual catalogue snapshot and an IMDb ratings extract."""
 import argparse
 import csv
 import hashlib
@@ -36,7 +36,7 @@ def build(source, output, cutoff, *, minimum_release_facts=10001, ratings_source
                     saved.append(path.name)
                 os.replace(path, destination)
                 published.append(path.name)
-            for name in ('fact_year_end_catalog.csv', 'dim_rating_extract.csv'):
+            for name in ('fact_year_end_catalog.csv', 'dim_rating_extract.csv', 'fact_series_year_snapshot.csv'):
                 legacy = output / name
                 if legacy.exists():
                     os.replace(legacy, backup / legacy.name)
@@ -56,8 +56,8 @@ def _build(source, output, cutoff, *, minimum_release_facts=10001):
         raise ValueError('Cutoff year must be between 1 and 9999')
     output.mkdir(parents=True, exist_ok=True)
     dimensions = {name: {} for name in ('title_type', 'genre_set', 'audience')}
-    # Start and end+1 deltas avoid expanding each series into individual years.
-    events = defaultdict(lambda: defaultdict(lambda: [0, 0]))
+    # New titles per start year and category; the catalogue stock is their running sum.
+    new_titles = defaultdict(Counter)
     counts = Counter()
     for name in (
         'excluded_missing_start_year', 'excluded_invalid_start_year',
@@ -65,8 +65,9 @@ def _build(source, output, cutoff, *, minimum_release_facts=10001):
         'invalid_runtime_facts', 'unknown_genre_facts', 'unknown_audience_facts',
         'series_candidates', 'series_with_known_end', 'series_with_unknown_end',
         'series_excluded_invalid_end_year', 'series_known_end_after_cutoff',
-        'snapshot_facts', 'known_end_series_years', 'unknown_end_series_years',
+        'known_end_series_years', 'unknown_end_series_years',
         'known_end_series_at_cutoff', 'unknown_end_series_at_cutoff',
+        'catalog_snapshot_facts', 'catalog_new_titles_total', 'catalog_titles_at_cutoff',
     ):
         counts[name] = 0
     years = set()
@@ -83,7 +84,7 @@ def _build(source, output, cutoff, *, minimum_release_facts=10001):
         return result
 
     with source.open(encoding='utf-8', newline='') as raw, (output / 'fact_title_release.csv').open('w', encoding='utf-8', newline='') as target:
-        facts = writer(target, ['title_id', 'primary_title', 'year_key', 'title_type_key', 'genre_set_key', 'audience_key', 'title_count', 'runtime_minutes', 'runtime_known_count'])
+        facts = writer(target, ['title_id', 'primary_title', 'year_key', 'title_type_key', 'genre_set_key', 'audience_key', 'title_count', 'runtime_minutes', 'runtime_known_count', 'series_end_status', 'end_year'])
         reader = csv.DictReader(raw, delimiter='\t', quoting=csv.QUOTE_NONE)
         required = {'tconst', 'titleType', 'primaryTitle', 'isAdult', 'startYear',
                     'endYear', 'runtimeMinutes', 'genres'}
@@ -113,42 +114,19 @@ def _build(source, output, cutoff, *, minimum_release_facts=10001):
             if not known:
                 counts['missing_runtime_facts' if runtime in ('\\N', '') else 'invalid_runtime_facts'] += 1
             minutes = int(runtime) if known else 0
-            facts.writerow([row['tconst'], row['primaryTitle'], year, *keys, 1, minutes, int(known)])
+            end_status, end_year = _series_end(row, year, cutoff, counts)
+            facts.writerow([row['tconst'], row['primaryTitle'], year, *keys, 1, minutes, int(known),
+                            end_status or '', '' if end_year is None else end_year])
             years.add(year)
+            new_titles[year][keys] += 1
             counts['release_facts'] += 1
             counts['known_runtime_facts'] += int(known)
             counts['total_runtime_minutes'] += minutes
 
-            if row['titleType'] not in SERIES_TYPES:
-                continue
-            counts['series_candidates'] += 1
-            raw_end = row['endYear'].strip()
-            unknown_end = raw_end in ('\\N', '')
-            if unknown_end:
-                # A cumulative metadata count, not an inferred airing interval.
-                last_reporting_year = cutoff
-                counts['series_with_unknown_end'] += 1
-            elif raw_end.isdigit() and year <= int(raw_end) <= 9999:
-                end = int(raw_end)
-                last_reporting_year = min(end, cutoff)
-                counts['series_with_known_end'] += 1
-                counts['series_known_end_after_cutoff'] += int(end > cutoff)
-            else:
-                # Invalid ends are not evidence that a series is still airing.
-                # Its release remains in the detail fact table.
-                counts['series_excluded_invalid_end_year'] += 1
-                continue
-            index = int(unknown_end)
-            events[year][keys][index] += 1
-            events[last_reporting_year + 1][keys][index] -= 1
-            prefix = 'unknown_end' if unknown_end else 'known_end'
-            counts[f'{prefix}_series_years'] += last_reporting_year - year + 1
-            counts[f'{prefix}_series_at_cutoff'] += int(last_reporting_year == cutoff)
-
     if not years:
         raise ValueError('No eligible titles in the source')
     # One membership per distinct genre in each combination. The combination
-    # remains the fact FK, so the same bridge also filters aggregate snapshots.
+    # remains the fact FK, so the same bridge also filters the catalogue snapshot.
     genre_members = sorted({
         genre for genre_set in dimensions['genre_set']
         for genre in genre_set.split(',')
@@ -171,30 +149,22 @@ def _build(source, output, cutoff, *, minimum_release_facts=10001):
         for year in range(min(years), cutoff + 1):
             rows.writerow([year, year, year // 10 * 10, (year - 1) // 100 + 1, f'{year:04d}-12-31'])
 
-    running = defaultdict(lambda: [0, 0])
-    snapshot_series_years = [0, 0]
-    with (output / 'fact_series_year_snapshot.csv').open('w', encoding='utf-8', newline='') as target:
-        rows = writer(target, ['year_key', 'title_type_key', 'genre_set_key', 'audience_key', 'known_interval_series_count', 'started_series_unknown_end_count'])
+    # Dense stock: once a category appears it has a row in every later year.
+    stock = Counter()
+    with (output / 'fact_catalog_year_snapshot.csv').open('w', encoding='utf-8', newline='') as target:
+        rows = writer(target, ['year_key', 'title_type_key', 'genre_set_key', 'audience_key', 'new_title_count', 'cumulative_title_count'])
         for year in range(min(years), cutoff + 1):
-            for keys, values in events.get(year, {}).items():
-                running[keys][0] += values[0]
-                running[keys][1] += values[1]
-                if min(running[keys]) < 0:
-                    raise ValueError('Negative series count in snapshot')
-                if running[keys] == [0, 0]:
-                    del running[keys]
-            for keys, values in sorted(running.items()):
-                rows.writerow([year, *keys, *values])
-                counts['snapshot_facts'] += 1
-                for index in (0, 1):
-                    snapshot_series_years[index] += values[index]
+            flow = new_titles.get(year, {})
+            stock.update(flow)
+            for keys in sorted(stock):
+                rows.writerow([year, *keys, flow.get(keys, 0), stock[keys]])
+                counts['catalog_snapshot_facts'] += 1
+                counts['catalog_new_titles_total'] += flow.get(keys, 0)
+    counts['catalog_titles_at_cutoff'] = sum(stock.values())
     if counts['release_facts'] < minimum_release_facts:
         raise ValueError(f'Requirement: at least {minimum_release_facts:,} release facts')
-    for index, prefix in enumerate(('known_end', 'unknown_end')):
-        if snapshot_series_years[index] != counts[f'{prefix}_series_years']:
-            raise ValueError(f'{prefix}: snapshot reporting-year memberships do not match source rules')
-        if sum(value[index] for value in running.values()) != counts[f'{prefix}_series_at_cutoff']:
-            raise ValueError(f'{prefix}: final snapshot does not match source intervals')
+    if not counts['catalog_new_titles_total'] == counts['catalog_titles_at_cutoff'] == counts['release_facts']:
+        raise ValueError('Catalogue snapshot does not reconcile with release facts')
     report = dict(counts)
     with source.open('rb') as handle:
         source_sha256 = hashlib.file_digest(handle, 'sha256').hexdigest()
@@ -212,27 +182,59 @@ def _build(source, output, cutoff, *, minimum_release_facts=10001):
         year_members=cutoff - min(years) + 1,
         genre_bridge_rows=len(bridge),
         series_types=sorted(SERIES_TYPES),
-        snapshot_semantics_version=2,
-        snapshot_rule='Known interval: startYear <= year <= endYear; unknown end: startYear <= year, status indeterminate',
+        snapshot_semantics_version=3,
+        snapshot_rule='Catalogue snapshot: one row per reference year and category from its first title through cutoff',
+        series_end_rule='Known interval: startYear <= year <= endYear; unknown end: startYear <= year, status indeterminate',
         missing_end_policy='Count already-started series with unknown end separately; do not infer continued airing or combine into an airing total',
         measure_definitions={
-            'known_interval_series_count': 'Valid known start/end interval includes reference year (inclusive)',
-            'started_series_unknown_end_count': 'Series started by reference year with missing end; airing status indeterminate',
+            'new_title_count': 'Eligible titles whose start year is the reference year (flow, additive)',
+            'cumulative_title_count': 'Eligible titles with start year up to the reference year (stock, semi-additive over time)',
+            'series_end_status': 'known / unknown / invalid end year for tvSeries and tvMiniSeries; NULL for other types',
         },
-        series_year_control_note='Technical reporting-year memberships for each measure, not observed years of airing',
+        series_year_control_note='Technical reporting-year memberships for each series measure, not observed years of airing',
         unknown_end_values=['\\N', ''],
-        invalid_end_policy='Exclude from series snapshot only; retain release fact',
+        invalid_end_policy='Store status invalid and no end year; excluded from series interval measures; release retained',
         validation_checks={
             'minimum_release_facts': True,
-            'nonnegative_snapshot_counts': True,
-            'reporting_year_memberships_match_source': True,
-            'cutoff_counts_match_source_intervals': True,
+            'catalog_flow_matches_releases': True,
+            'catalog_stock_at_cutoff_matches_releases': True,
         },
     )
     (output / 'validation_report.json').write_text(json.dumps(report, indent=2) + '\n', encoding='utf-8')
-    # Retire the previous generated fact after the replacement has passed validation.
-    (output / 'fact_year_end_catalog.csv').unlink(missing_ok=True)
+    # Retire previous generated facts after the replacement has passed validation.
+    for legacy in ('fact_year_end_catalog.csv', 'fact_series_year_snapshot.csv'):
+        (output / legacy).unlink(missing_ok=True)
     return report
+
+
+def _series_end(row, year, cutoff, counts):
+    """Classify a series end year and update the series control counts.
+
+    Returns (status, end_year): status is None for non-series types, and end_year
+    is set only for a valid known end. Control counts are reporting-year
+    memberships used to validate the series queries, not years of airing.
+    """
+    if row['titleType'] not in SERIES_TYPES:
+        return None, None
+    counts['series_candidates'] += 1
+    raw_end = row['endYear'].strip()
+    if raw_end in ('\\N', ''):
+        # A cumulative metadata count, not an inferred airing interval.
+        counts['series_with_unknown_end'] += 1
+        counts['unknown_end_series_years'] += cutoff - year + 1
+        counts['unknown_end_series_at_cutoff'] += 1
+        return 'unknown', None
+    if raw_end.isdigit() and year <= int(raw_end) <= 9999:
+        end = int(raw_end)
+        last_reporting_year = min(end, cutoff)
+        counts['series_with_known_end'] += 1
+        counts['series_known_end_after_cutoff'] += int(end > cutoff)
+        counts['known_end_series_years'] += last_reporting_year - year + 1
+        counts['known_end_series_at_cutoff'] += int(last_reporting_year == cutoff)
+        return 'known', end
+    # Invalid ends are not evidence that a series is still airing.
+    counts['series_excluded_invalid_end_year'] += 1
+    return 'invalid', None
 
 
 if __name__ == '__main__':

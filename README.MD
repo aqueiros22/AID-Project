@@ -16,9 +16,9 @@ This README follows the seven parts of the assignment and serves as the basis fo
 
 The subject is the catalogue of audiovisual titles represented in IMDb, including movies, television series, episodes and other title types. The project transforms title metadata and user-rating summaries into a dimensional warehouse for descriptive analysis.
 
-Three analytical processes define the scope: counting titles by release/start year, reconstructing annual series interval information, and analysing the ratings available in a dated extract. The main questions are:
+Three analytical processes define the scope: counting titles by release/start year (including the start and end metadata of series), tracking the year-end catalogue stock in an aggregate periodic snapshot, and analysing the ratings available in a dated extract. The main questions are:
 
-- How do release volume, title types and genre representation vary over time?
+- How do release volume, catalogue stock, title types and genre representation vary over time?
 - How do known runtimes and metadata completeness differ between categories?
 - How many recorded series intervals cover each year, and how many already-started series have an unknown end year?
 - What proportion of titles have ratings, and how do current ratings vary by type, release decade and genre?
@@ -34,7 +34,7 @@ The project uses `title.basics.tsv` and `title.ratings.tsv`, downloaded from IMD
 | --- | --- |
 | More than 10,000 facts | `fact_title_release` contains **11,460,001** eligible title records. |
 | At least one additive measure | Release `title_count`, `runtime_minutes` and `runtime_known_count` can be summed across disjoint title groups. |
-| Aggregated facts or snapshots with a semi-additive measure | `fact_series_year_snapshot` has **66,964** aggregate rows. Its series counts are additive across disjoint categories within a year, but not across years as distinct-series totals. |
+| Aggregated facts or snapshots with a semi-additive measure | `fact_catalog_year_snapshot` is an aggregate periodic snapshot with _(to be refreshed with the final download)_ rows. Its `cumulative_title_count` (year-end stock) is additive across disjoint categories within a year, but not across years. |
 | At least four dimensions, including time | Year, title type, genre combination and adult-content flag are directly referenced by all three facts. |
 | Dimensions shared by the analytical processes | The same conformed dimensions and genre membership bridge are reused across facts. |
 | Additional ratings analysis | `fact_title_rating_snapshot` contains **1,731,185** rated-title observations with one row per eligible rated title in the current snapshot. |
@@ -48,10 +48,10 @@ The model contains three fact tables. The genre bridge and `warehouse_metadata` 
 | Process / fact table | Year role | Title type | Genre combination | Adult flag | Individual genre |
 | --- | --- | --- | --- | --- | --- |
 | `fact_title_release` | Release/start | X | X | X | Via bridge |
-| `fact_series_year_snapshot` | Reference year | X | X | X | Via bridge |
+| `fact_catalog_year_snapshot` | Reference year (year-end) | X | X | X | Via bridge |
 | `fact_title_rating_snapshot` | Release/start | X | X | X | Via bridge |
 
-All three fact tables use conformed category dimensions. A year key has a different analytical role in the series snapshot. The same genre bridge supports all three processes.
+All three fact tables use conformed category dimensions. A year key has a different analytical role in the catalogue snapshot (the reference year-end). The same genre bridge supports all three processes. Series interval questions are answered from the release fact, which carries each series' end metadata, so no separate series fact duplicates the title population.
 
 ### 2.2. Dimensions dictionary
 
@@ -75,12 +75,19 @@ Category surrogate keys are integers assigned by ETL. Year is a natural integer 
 - `runtime_known_count`: 1 for positive known duration, otherwise 0.
 - Mean known runtime = `SUM(runtime_minutes) / SUM(runtime_known_count)`; missing durations are excluded from the denominator.
 
-**`fact_series_year_snapshot`** has one row per reference year x type x genre combination x audience, with those four FKs as its composite PK. Only `tvSeries` and `tvMiniSeries` contribute. Measures:
+Two non-additive attributes describe series ends (`tvSeries` and `tvMiniSeries` only; both NULL for other types):
 
-- `known_interval_series_count`: recorded valid start/end interval covers the year, including both endpoints.
-- `started_series_unknown_end_count`: series started by that year with a missing end year in this extract.
+- `series_end_status`: `known` (valid end year), `unknown` (missing end) or `invalid` (malformed end, or end before start).
+- `end_year`: the source end year, set only when the status is `known`. It is a plain attribute rather than a role-playing FK to `dim_year`, because recorded ends may lie after the cutoff year (for example 2028) and therefore outside the year dimension.
 
-Both measures are additive across disjoint categories within one year, but semi-additive over time: summing years counts reporting-year memberships, not distinct series. Missing end year does **not** establish ongoing broadcasting. These measures are separate and must never be added as an airing total. Even a known interval cannot prove episodes aired in every year.
+Annual series interval measures are evaluated in queries from these attributes. A known interval covers a reference year when `year_key <= year <= end_year`; an unknown end only says the series had started by that year. The two counts are never added into an airing total, and summing them over years counts reporting-year memberships, not distinct series. Missing end year does **not** establish ongoing broadcasting.
+
+**`fact_catalog_year_snapshot`** is an aggregate periodic snapshot with one row per reference year x type x genre combination x audience, with those four FKs as its composite PK. Every title type contributes. Once a category has its first title, it has a row in every later year through the cutoff, so the stock is available for any year. Measures:
+
+- `new_title_count`: eligible titles whose start year is the reference year (a flow). **Additive** across categories and across years.
+- `cumulative_title_count`: eligible titles with a start year up to the reference year (the year-end stock). **Semi-additive**: additive across disjoint categories within one year, never across years, since a title remains in every later stock.
+
+The stock is reconstructed from current metadata: it describes the titles of this extract by start year, not what IMDb listed at each past year-end.
 
 **`fact_title_rating_snapshot`** has one row per eligible rated title in the current snapshot, with PK `title_id`. It directly references release/start year, type, genre combination and audience dimensions. Each refresh replaces the snapshot rather than appending observations. It carries:
 
@@ -96,8 +103,8 @@ The dictionaries describe the implemented [SQL schema](sql/warehouse_schema.sql)
 
 | Fact | Primary key | Direct foreign keys | Additional attributes |
 | --- | --- | --- | --- |
-| `fact_title_release` | `title_id` (TEXT) | `year_key`, `title_type_key`, `genre_set_key`, `audience_key` | `primary_title` (TEXT) |
-| `fact_series_year_snapshot` | All four dimension keys together | `year_key`, `title_type_key`, `genre_set_key`, `audience_key` | None |
+| `fact_title_release` | `title_id` (TEXT) | `year_key`, `title_type_key`, `genre_set_key`, `audience_key` | `primary_title`, `series_end_status` (TEXT); `end_year` (INTEGER) |
+| `fact_catalog_year_snapshot` | All four dimension keys together | `year_key`, `title_type_key`, `genre_set_key`, `audience_key` | None |
 | `fact_title_rating_snapshot` | `title_id` (TEXT) | `year_key`, `title_type_key`, `genre_set_key`, `audience_key` | None |
 
 Each FK references the same-named key in its dimension. The genre bridge has two integer FKs, which together form its PK. The ratings file SHA-256 and download date are stored in `ratings_provenance` in the ETL validation report, also embedded in `warehouse_metadata.source_report_json`. This load-level provenance is separate from the release/start year and is not a dimension.
@@ -107,8 +114,8 @@ Each FK references the same-named key in its dimension. The genre bridge has two
 | `title_count` | INTEGER | Additive | Count titles in disjoint release groups. |
 | `runtime_minutes` | INTEGER | Additive | Sum known durations. |
 | `runtime_known_count` | INTEGER | Additive | Denominator for the mean known runtime. |
-| `known_interval_series_count` | INTEGER | Semi-additive | Sum disjoint categories within one reference year. |
-| `started_series_unknown_end_count` | INTEGER | Semi-additive | Sum disjoint categories within one reference year. |
+| `new_title_count` | INTEGER | Additive | Sum new titles across categories and years. |
+| `cumulative_title_count` | INTEGER | Semi-additive | Sum disjoint categories within one reference year; never sum over years. |
 | `average_rating` | REAL | Non-additive | Calculate an explicitly labelled equal-title mean within one extract. |
 | `num_votes` | INTEGER | Additive within the current snapshot | Sum votes across distinct titles and disjoint category groups. |
 | `rated_title_count` | INTEGER | Additive within the current snapshot | Count rated titles in disjoint groups. |
@@ -117,9 +124,9 @@ Each FK references the same-named key in its dimension. The genre bridge has two
 
 ### 3.1. Structure and relationships
 
-The model is a fact constellation: three fact tables share conformed dimensions. One release is a title-level record, one series snapshot row aggregates a year and category combination, and one current rating record describes an eligible rated title. Releases and current ratings both have title-level grain, but represent different processes and populations: unrated titles still belong to releases. Keeping ratings separate makes that optional coverage explicit. Joining the aggregate series rows directly to title-level facts would multiply measures unless they are first aggregated to compatible grains.
+The model is a fact constellation: three fact tables share conformed dimensions. One release is a title-level record, one catalogue snapshot row aggregates a year-end and category combination, and one current rating record describes an eligible rated title. Releases and current ratings both have title-level grain, but represent different processes and populations: unrated titles still belong to releases. Keeping ratings separate makes that optional coverage explicit. Joining the aggregate catalogue rows directly to title-level facts would multiply measures unless they are first aggregated to compatible grains.
 
-Missing ratings produce no rating fact and never become zero. Release facts remain available for coverage denominators. The rating PK guarantees at most one current rating per title, so rating queries join directly to releases by `title_id`. The ETL reconciles the shared identifier and all category keys; fact-to-fact SQL joins are restricted to this controlled grain. Series/release comparisons aggregate each table to the same grain before drill-across.
+Missing ratings produce no rating fact and never become zero. Release facts remain available for coverage denominators. The rating PK guarantees at most one current rating per title, so rating queries join directly to releases by `title_id`. The ETL reconciles the shared identifier and all category keys; fact-to-fact SQL joins are restricted to this controlled grain. Catalogue/release comparisons aggregate each table to the same grain before drill-across.
 
 The rating fact does not have an FK to another fact table: shared dimensions describe the process, while the title identifier supports cross-process reconciliation. Load validation rejects orphan rating titles and inconsistent dimension keys.
 
@@ -163,14 +170,16 @@ erDiagram
         INTEGER title_count
         INTEGER runtime_minutes
         INTEGER runtime_known_count
+        TEXT series_end_status
+        INTEGER end_year
     }
-    fact_series_year_snapshot {
+    fact_catalog_year_snapshot {
         INTEGER year_key PK, FK
         INTEGER title_type_key PK, FK
         INTEGER genre_set_key PK, FK
         INTEGER audience_key PK, FK
-        INTEGER known_interval_series_count
-        INTEGER started_series_unknown_end_count
+        INTEGER new_title_count
+        INTEGER cumulative_title_count
     }
     fact_title_rating_snapshot {
         TEXT title_id PK
@@ -188,17 +197,17 @@ erDiagram
     dim_title_type ||..o{ fact_title_release : "title_type_key"
     dim_genre_set ||..o{ fact_title_release : "genre_set_key"
     dim_audience ||..o{ fact_title_release : "audience_key"
-    dim_year ||--o{ fact_series_year_snapshot : "year_key"
-    dim_title_type ||--o{ fact_series_year_snapshot : "title_type_key"
-    dim_genre_set ||--o{ fact_series_year_snapshot : "genre_set_key"
-    dim_audience ||--o{ fact_series_year_snapshot : "audience_key"
+    dim_year ||--o{ fact_catalog_year_snapshot : "year_key"
+    dim_title_type ||--o{ fact_catalog_year_snapshot : "title_type_key"
+    dim_genre_set ||--o{ fact_catalog_year_snapshot : "genre_set_key"
+    dim_audience ||--o{ fact_catalog_year_snapshot : "audience_key"
     dim_year ||..o{ fact_title_rating_snapshot : "year_key"
     dim_title_type ||..o{ fact_title_rating_snapshot : "title_type_key"
     dim_genre_set ||..o{ fact_title_rating_snapshot : "genre_set_key"
     dim_audience ||..o{ fact_title_rating_snapshot : "audience_key"
 ```
 
-**Diagram notation.** `PK` marks a primary-key column, `FK` a foreign key and `UK` a unique attribute. All four `PK, FK` columns of `fact_series_year_snapshot` together form its composite PK; the two bridge columns likewise form one composite PK. Each fact or bridge row references **exactly one** parent dimension member; a dimension member may be referenced by **zero or many** rows (`1 : 0..N`). Solid relationships identify children through a parent key; dashed relationships use FKs outside the child's PK. These cardinalities describe the physical schema.
+**Diagram notation.** `PK` marks a primary-key column, `FK` a foreign key and `UK` a unique attribute. All four `PK, FK` columns of `fact_catalog_year_snapshot` together form its composite PK; the two bridge columns likewise form one composite PK. Each fact or bridge row references **exactly one** parent dimension member; a dimension member may be referenced by **zero or many** rows (`1 : 0..N`). Solid relationships identify children through a parent key; dashed relationships use FKs outside the child's PK. These cardinalities describe the physical schema.
 
 There is no physical FK between the release and rating facts. Their optional one-rating-per-title correspondence is checked during loading, as explained above. `warehouse_metadata` is omitted because it is provenance, not a dimensional entity.
 
@@ -207,7 +216,7 @@ For the report, download the [vector diagram (SVG)](media/dimensional_model.svg)
 
 ### 3.2. Design decisions
 
-**Conformed dimensions.** Using the same category keys and labels allows comparisons between processes without redefining title types, genres or adult flags. The year dimension is shared, but its role must be stated: a release/start year in releases and ratings, and a reference year in series snapshots.
+**Conformed dimensions.** Using the same category keys and labels allows comparisons between processes without redefining title types, genres or adult flags. The year dimension is shared, but its role must be stated: a release/start year in releases and ratings, and a reference year-end in the catalogue snapshot.
 
 **Title identity.** `title_id` retains IMDb's `tconst` as a degenerate identifier. There is no separate `dim_title` in this implementation. `primary_title` is retained in the release fact for readable search and ranking results. Ratings use the shared identifier to retrieve the title name with at most one current rating per title.
 
@@ -217,19 +226,21 @@ For the report, download the [vector diagram (SVG)](media/dimensional_model.svg)
 
 **Temporal scope.** A year dimension matches the granularity of the title source; month and day of release are not invented. The ratings download date and source hash are load-level metadata. Because the warehouse stores only the current ratings snapshot, an extraction dimension and a per-row extraction key are unnecessary. The `snapshot` name describes the current state; it does not imply retained periodic history. A future historical model would need a dated observation key and a different primary key before appending ratings for the same title.
 
-### 3.3. How the series snapshot is constructed
+### 3.3. Series end metadata and the catalogue snapshot
 
-For a valid known interval, a series contributes from its start year through its end year, inclusive, capped by the reporting cutoff. For an unknown end, it contributes to the separate already-started/unknown-end measure from its start year through cutoff. The ETL uses additions at the start and subtractions after the last included year rather than materialising every series-year row before aggregation.
+**Why there is no separate series fact.** An earlier version stored a `fact_series_year_snapshot` with annual counts of series intervals. Its rows were derived only from series that are already release facts, so the same titles were represented twice and had to be reconciled. The model now keeps each series once, in `fact_title_release`, with its `series_end_status` and `end_year`. The interval questions are answered by evaluating those attributes for a reference year.
 
-For example, a series starting in 2018 and ending in 2020 contributes to the known-interval measure in 2018, 2019 and 2020. A series starting in 2019 with no end year contributes to the unknown-end measure from 2019 through 2026. The latter contribution expresses missing metadata, not evidence of continued broadcasting.
+For a valid known interval, a series contributes from its start year through its end year, inclusive. For an unknown end, it contributes to the separate already-started/unknown-end count from its start year onwards. For example, a series starting in 2018 and ending in 2020 is a known interval in 2018, 2019 and 2020. A series starting in 2019 with no end year counts as started with unknown end from 2019 through 2026. This expresses missing metadata, not evidence of continued broadcasting. Invalid ends remain releases but enter neither interval count.
 
-These annual rows reconstruct intervals from the current extract. They are not observations of what IMDb knew at each historical year-end. Summing a count over years gives reporting-year memberships, not distinct series or proven years of activity.
+**Catalogue snapshot.** The ETL counts new titles per start year and category, then takes a running sum from the first year through the cutoff to obtain each year-end stock. Every category that has started keeps a row in later years even without new titles, so a stock never has to be inferred from a missing row. The ETL and the loader both check that flows sum to the release population, that stocks at the cutoff equal it, and that each stock equals the previous year's stock plus that year's flow.
+
+These annual rows reconstruct the catalogue from the current extract. They are not observations of what IMDb knew at each historical year-end, and summing stocks over years would count the same titles repeatedly.
 
 ### 3.4. Physical implementation and validation
 
-The persistent SQLite schema uses `STRICT` tables, PKs, FKs and CHECK constraints. A trigger restricts the series snapshot to `tvSeries` and `tvMiniSeries`. Indexes support filtering releases by type/year and genre combination, series snapshots by genre combination, and reverse genre membership lookups. Constraints and load-time reconciliation establish structural consistency; they do not prove the factual accuracy of source metadata.
+The persistent SQLite schema uses `STRICT` tables, PKs, FKs and CHECK constraints. CHECK constraints tie `end_year` to a `known` status, and triggers allow series end metadata only on `tvSeries` and `tvMiniSeries` releases. Indexes support filtering releases by type/year, genre combination and series end status, the catalogue snapshot by genre combination, and reverse genre membership lookups. Constraints and load-time reconciliation establish structural consistency; they do not prove the factual accuracy of source metadata.
 
-`warehouse_metadata` stores the ETL provenance and validation results. Schema version 4 prevents an older database from being silently used with the ratings model. These physical choices support the implementation but do not change the grain or meaning of the facts.
+`warehouse_metadata` stores the ETL provenance and validation results. Schema version 5 prevents an older database (with the former series snapshot) from being silently used with the current model. These physical choices support the implementation but do not change the grain or meaning of the facts.
 
 ## 4. Data sources selection. Extraction, transformation and loading.
 
@@ -260,12 +271,12 @@ The implementation is in [refine_dataset.py](scripts/refine_dataset.py), [rating
 1. **Acquisition:** datasets downloaded from IMDb on **12/11/2026** and decompressed into `data/raw/title.basics.tsv` and `data/raw/title.ratings.tsv`. No scraping is used.
 2. **Extraction:** read UTF-8 TSV with literal tabs and no CSV quote interpretation. Check mandatory columns and malformed records. Preserve source hashes, sizes, URLs and download date.
 3. **Title transformation:** retain numeric start years from 1 through cutoff (default 2026). Count missing, malformed and out-of-range years separately. Preserve all eligible types. Normalize genre combinations and adult flags; distinguish missing and invalid/nonpositive runtimes.
-4. **Series transformation:** use start and end+1 deltas to construct annual aggregates efficiently. Missing ends contribute to the separate unknown-end count through cutoff. Invalid ends exclude only the series snapshot contribution; releases are retained.
+4. **Series and catalogue transformation:** classify each series end as known, unknown or invalid and store it on the release; ends after the cutoff are kept. Count new titles per start year and category and accumulate them into the year-end catalogue stock through the cutoff.
 5. **Rating transformation:** validate unique `tconst`, finite ratings between 1 and 10 and positive integer votes; reject invalid input. Join to eligible releases and copy conformed keys. Report unmatched ratings (absent or excluded titles) separately. Emit the rating fact CSV with one row per title and keep download date, URL, hash and byte size in the validation report. No rating is imputed.
 6. **Publication:** write to a staging directory and roll back ordinary publication failures. Failed rating validation also leaves previously published outputs intact.
-7. **Loading:** create a temporary SQLite database with PKs, FKs, STRICT types and CHECK constraints; load dimensions and all three facts; create indexes; validate integrity, row counts, measures, genre memberships, series types and rating/release alignment. Publish by atomic replacement only after successful validation.
+7. **Loading:** create a temporary SQLite database with PKs, FKs, STRICT types and CHECK constraints; load dimensions and all three facts; create indexes; validate integrity, row counts, measures, genre memberships, series end metadata, catalogue flows and stocks, and rating/release alignment. Publish by atomic replacement only after successful validation.
 
-`warehouse_metadata` stores build time, ETL report and validation results. It is operational metadata, not a dimensional fact table. Schema version **4** prevents an old database from being queried as the new model. Series snapshot semantics remain version 2.
+`warehouse_metadata` stores build time, ETL report and validation results. It is operational metadata, not a dimensional fact table. Schema version **5** prevents an old database from being queried as the new model. Snapshot semantics are version 3 (catalogue snapshot; series end metadata on the release fact).
 
 Refreshes rebuild the complete warehouse. The rating PK enforces one row per title; the current snapshot is replaced on refresh and historical ratings are not retained. Changes to category metadata are not tracked as slowly changing dimensions. Missing dates and future years are reported rather than invented. 2026 is incomplete at acquisition, and records in that year need not have been released by 12 November.
 
@@ -286,8 +297,8 @@ Refreshes rebuild the complete warehouse. The rating PK enforces one row per tit
 | Eligible series | 351,646 |
 | Series with a known end year | 164,343 |
 | Series with an unknown end year | 187,303 |
-| Series excluded from snapshots due to invalid end | 0 |
-| Annual series snapshot rows | 66,964 |
+| Series with an invalid end year | 0 |
+| Catalogue snapshot rows | _(to be refreshed with the final download)_ |
 | Source ratings | 1,731,454 |
 | Eligible rating facts | 1,731,185 |
 | Ratings without an eligible title match | 269 |
@@ -296,7 +307,7 @@ The counts reconcile: source titles equal eligible titles plus exclusions, and s
 
 The loaded year dimension spans 1874 to 2026. There are 11 title types, 2,362 genre combinations, 29 individual genre members, 2 audience members observed in eligible titles, 6,684 genre memberships. The current ratings source is identified in load metadata rather than in an extra dimension. `Unknown` audience is supported by the model but was not needed in this load.
 
-The implementation was validated with 26 tests covering transformation rules, storage constraints, duplicate/invalid ratings, matching and coverage denominators, overlapping genres and failure recovery. The full warehouse load also passed integrity, foreign-key and control-total checks. These checks validate implementation consistency rather than certify the external source as complete.
+The implementation was validated with 28 tests covering transformation rules, series end metadata, catalogue stocks, storage constraints, duplicate/invalid ratings, matching and coverage denominators, overlapping genres and failure recovery. The full warehouse load also passed integrity, foreign-key and control-total checks. These checks validate implementation consistency rather than certify the external source as complete.
 
 ### 4.4. Reproduction commands and project organisation
 
@@ -338,9 +349,9 @@ The genre-search command uses OR membership with `EXISTS`, so a title matching b
 
 ### 5.1. Querying approach
 
-The queries run against the existing persistent warehouse. The SQL is maintained in [run_queries.py](scripts/run_queries.py) and [rating_queries.py](scripts/rating_queries.py). All ten result sets are available in [analysis_results.json](data/analysis_results.json); complete tables and additional interpretation are in [Data_Analysis.md](docs/Data_Analysis.md). The following subsections include the main measured findings directly in this report base.
+The queries run against the existing persistent warehouse. The SQL is maintained in [run_queries.py](scripts/run_queries.py) and [rating_queries.py](scripts/rating_queries.py). All result sets are available in [analysis_results.json](data/analysis_results.json); complete tables and additional interpretation are in [Data_Analysis.md](docs/Data_Analysis.md). The following subsections include the main measured findings directly in this report base.
 
-Additive measures use sums over disjoint groups. Runtime means divide total known duration by the number of known durations. Series/release drill-across aggregates both facts to year before joining. Rating queries use the current snapshot, with one row per rated title, and preserve unrated releases when calculating coverage. Individual-genre analyses use the bridge and explicitly treat genre groups as overlapping.
+Additive measures use sums over disjoint groups. Runtime means divide total known duration by the number of known durations. Series interval measures are evaluated per reference year from the release fact's end metadata. Catalogue stocks are summed across categories within one year only. Rating queries use the current snapshot, with one row per rated title, and preserve unrated releases when calculating coverage. Individual-genre analyses use the bridge and explicitly treat genre groups as overlapping.
 
 ### 5.2. Query 1: release volume and average known runtime
 
@@ -404,6 +415,8 @@ The revised figure displays the full, unmodified mean without clipping the 2000s
 
 The three columns answer different questions: a release flow, coverage by recorded intervals and a cumulative count of missing end metadata. The large unknown-end count makes an inferred airing total unjustified. The lower known-interval count for 2026 cannot establish a decline in broadcasting: unknown ends and the incomplete reference year constrain interpretation.
 
+All three columns now come from the release fact: new series by start year, and the two interval measures from `series_end_status` and `end_year`. With the same input files, the results are identical to the former series snapshot.
+
 ![New series and interval metadata](media/2_series_releases_vs_intervals.png)
 
 ### 5.4. Query 3: adult-flagged titles by decade and format
@@ -434,7 +447,7 @@ This demonstrates why an exact-combination filter is insufficient for an individ
 
 Comedy has 2,437 known series intervals covering 2010 and 3,320 covering 2020. Drama rises from 1,718 to 3,223 over those reference years. However, the separate 2020 unknown-end counts are 29,892 for Comedy and 16,654 for Drama.
 
-The query demonstrates reuse of the same genre bridge for aggregate facts. The differences describe interval metadata; they do not prove changes in annual broadcasting activity. Each series may also contribute to several genre groups.
+The query demonstrates reuse of the same genre bridge on the series end metadata of the release fact. The differences describe interval metadata; they do not prove changes in annual broadcasting activity. Each series may also contribute to several genre groups.
 
 ![Known series intervals by genre](media/6_series_by_genre.png)
 
@@ -492,6 +505,14 @@ The complete top 20 is in [Data_Analysis.md](docs/Data_Analysis.md). This is a p
 
 IMDb's published rating is already weighted. An equal-title mean answers a question about title ratings; weighting those values again by vote count would not reconstruct the raw mean of individual votes.
 
+### 5.12. Query 16: year-end catalogue stock by title type
+
+Query 16 uses the aggregate `fact_catalog_year_snapshot`. For 1990, 2010 and 2025 it reports, per title type, the titles that started in that year (flow), the year-end stock and each type's share of that year's stock. Shares are computed within a year; the stocks of different years are not added. Values _(to be refreshed with the final download)_.
+
+The stock shows how the composition of the recorded catalogue changes, for example the growing weight of episodes. It describes the current extract, not the historical size of IMDb, and a growing stock is consistent with retrospective cataloguing as well as new production.
+
+![Catalogue stock and flow by type](media/9_catalog_stock_by_type.png)
+
 ## 6. Critical reflection about the advantages and shortcomings with respect to operational databases
 
 ### 6.1. Operational and analytical purposes
@@ -505,16 +526,16 @@ The source here is a pair of published TSV extracts. IMDb's internal operational
 | Main workload | Frequent inserts, updates and detailed record lookups | Aggregations by release/reference year, type, genre and audience, including current ratings |
 | Organisation | Often normalized around entities and business transactions | Facts with declared grains and shared descriptive dimensions |
 | Freshness | Reflects committed operational changes | Reflects the downloaded files until the next full refresh |
-| Detail | Can retain individual events required by the application | Retains title-level facts and aggregate series intervals; no individual votes |
+| Detail | Can retain individual events required by the application | Retains title-level facts and an aggregate year-end catalogue snapshot; no individual votes |
 | Consistency | Constraints support valid operational changes | Constraints plus ETL reconciliation support consistent analytical measures |
-| Historical information | Depends on operational audit/history design | Current title metadata and one rating extract; annual intervals are reconstructed |
+| Historical information | Depends on operational audit/history design | Current title metadata and one rating extract; annual stocks and intervals are reconstructed |
 | Performance objective | Efficient short transactions and concurrent changes | Efficient scanning and grouping for the defined questions; no comparative benchmark was performed |
 
 ### 6.2. Advantages of the dimensional approach
 
 The declared grains and reusable measures make analytical questions easier to express consistently. For example, runtime comparisons use the same known-duration denominator, and ratings coverage always uses the eligible release population. Conformed dimensions support comparisons between processes without translating categories for every query.
 
-Precomputed annual series aggregates avoid repeatedly expanding title intervals for each analysis. The genre bridge provides a reusable solution for mixed-genre membership. Shared dimensions and indexes can reduce repeated transformation work and simplify query paths, although no measured speedup over an operational alternative is claimed.
+The precomputed catalogue snapshot answers stock questions without re-scanning every release for each reference year. The genre bridge provides a reusable solution for mixed-genre membership. Shared dimensions and indexes can reduce repeated transformation work and simplify query paths, although no measured speedup over an operational alternative is claimed.
 
 The warehouse also separates analytical processing from a hypothetical live transactional workload. In this implementation, all analysis occurs on local copies and does not query IMDb's operational systems. Provenance, constraints and repeatable ETL make the input version and transformation rules auditable.
 
@@ -522,9 +543,9 @@ The warehouse also separates analytical processing from a hypothetical live tran
 
 The warehouse requires additional storage for source files, intermediate CSVs, dimensions, facts and indexes. Full refreshes consume processing time and disk space; the staged and temporary outputs needed for safe publication add further overhead. Compared with a live operational system, the information becomes stale between downloads.
 
-The analytical model also selects and summarizes information. `originalTitle` is not carried into the warehouse, series snapshots lose individual title identity, and the ratings source has no individual votes. New questions may therefore require revisiting the raw data or acquiring a different source. Title metadata is not versioned as slowly changing dimensions, and previous rating extracts are not retained by the current refresh process.
+The analytical model also selects and summarizes information. `originalTitle` is not carried into the warehouse, the catalogue snapshot loses individual title identity, and the ratings source has no individual votes. New questions may therefore require revisiting the raw data or acquiring a different source. Title metadata is not versioned as slowly changing dimensions, and previous rating extracts are not retained by the current refresh process.
 
-Denormalized analytical structures need coordinated loading: title classifications are copied into the rating fact, so ETL and validation must keep them aligned with releases. Direct edits outside the pipeline can violate that alignment even when individual FKs remain valid. Precomputed snapshots must be regenerated when source intervals change.
+Denormalized analytical structures need coordinated loading: title classifications are copied into the rating fact, so ETL and validation must keep them aligned with releases. Direct edits outside the pipeline can violate that alignment even when individual FKs remain valid. The precomputed catalogue snapshot must be regenerated whenever releases change.
 
 Dimensional modelling does not eliminate analytical mistakes. Joining facts at incompatible grains can multiply rows; overlapping genre groups can double-count titles; accumulated votes cannot be added across extracts; and means need clear denominators. These constraints require documentation and disciplined query design as well as database checks.
 
@@ -538,13 +559,13 @@ These are limits on the conclusions that can be drawn from the sources. A well-f
 
 ## 7. Conclusion
 
-The warehouse integrates the IMDb datasets downloaded on 12/11/2026 into three fact tables sharing four direct dimensions and a genre bridge. The resulting 11,460,001 release facts, 66,964 series aggregate rows and 1,731,185 rating observations support the original questions. Ten analytical queries, a reproducible runtime investigation and eight figures provide four main conclusions:
+The warehouse integrates the IMDb datasets downloaded on 12/11/2026 into three fact tables sharing four direct dimensions and a genre bridge. The resulting 11,460,001 release facts, _(to be refreshed with the final download)_ catalogue snapshot rows and 1,731,185 rating observations support the original questions. Eleven analytical queries, a reproducible runtime investigation and nine figures provide four main conclusions:
 
 1. **How have recorded releases and genres evolved?** The catalogue contains 44,567 movies released in the 1980s and 170,083 in the 2010s, about **3.82 times as many**. This is growth in recorded catalogue coverage, not a measured worldwide production rate. Genre membership must include mixed combinations: Drama appears in 242,235 movies, but only **48.5%** have Drama alone.
 2. **Are duration differences representative of typical titles?** The apparent **213.21-minute** mean for series starting in the 2000s is dominated by one source record accounting for **76.16%** of the runtime sum. Without that single observation the mean is **50.84 minutes**, while the median is **30 minutes**. The evidence supports reporting distribution and sensitivity measures, rather than concluding that a typical 2000s series is unusually long. The raw-source check establishes where the value came from, not whether its meaning is correct.
 3. **What can be established about series over time?** For 2026, **5,144** recorded known intervals cover the reference year and **187,303** already-started series have unknown end dates. These measures describe different metadata states and cannot be added into an airing total. The model answers interval and missingness questions, but the available source cannot establish actual annual broadcasting activity.
 4. **How representative are the ratings and comparisons?** Ratings cover **15.11%** of eligible titles, with **54.40%** coverage for movies and **10.26%** for episodes. Coverage therefore needs to accompany any mean. A minimum of 1,000 votes changes the 1960s movie mean from **6.03 to 6.61**, but changes the 2010s mean from **6.22 to 6.07**: the selection rule affects cohorts differently and does not remove selection bias.
 
-The assignment requirements are supported by declared grains, additive release measures, semi-additive series counts and conformed dimensions. ETL reconciliation and 26 tests check implementation consistency. The model improves analytical consistency and traceability, while requiring storage, refresh and maintenance effort. It cannot repair missing observations or ambiguous source semantics by itself.
+The assignment requirements are supported by declared grains, additive release measures, a semi-additive catalogue stock and conformed dimensions. ETL reconciliation and 28 tests check implementation consistency. The model improves analytical consistency and traceability, while requiring storage, refresh and maintenance effort. It cannot repair missing observations or ambiguous source semantics by itself.
 
 The next useful steps are to investigate the meaning of extreme source durations, retain dated rating observations when historical analysis is required, and acquire dated episode-level evidence for broadcasting questions. Ratings grouped by release year remain a description of the current extract, not a historical measure of opinion.

@@ -1,4 +1,4 @@
-"""Render the measured results and interpretation of the ten project queries."""
+"""Render the measured results and interpretation of the project queries."""
 import json
 from scripts.paths import PROJECT_ROOT, REFINED
 from scripts.runtime_diagnostics import OUTPUT as RUNTIME_REPORT, markdown as runtime_markdown
@@ -28,7 +28,7 @@ def main():
         'Invalid or nonpositive runtimes': report['invalid_runtime_facts'],
         'Unknown genre combinations': report['unknown_genre_facts'],
         'Unknown adult flags': report['unknown_audience_facts'],
-        'Series snapshot rows': report['snapshot_facts'],
+        'Catalogue snapshot rows': report['catalog_snapshot_facts'],
         'Eligible series': report['series_candidates'],
         'Series with known end': report['series_with_known_end'],
         'Series with unknown end': report['series_with_unknown_end'],
@@ -52,7 +52,7 @@ def main():
         'Counts are additive; mean duration uses only titles with a positive known runtime. '
         'Changes in runtime may reflect changing metadata coverage as well as title composition. '
         'The 2020s are a partial decade and must not be compared as a completed decade.',
-        'Each process is first aggregated by year, avoiding multiplication of facts. '
+        'All three measures come from the series end metadata on the release fact, evaluated per reference year. '
         'New releases are a flow; interval and unknown-end measures describe different populations. '
         'An unknown end cannot establish ongoing broadcasting. Historical rows use current metadata.',
         'The format breakdown describes adult-flagged titles, not age certifications or audience behaviour. '
@@ -61,7 +61,7 @@ def main():
         'substituting zero would artificially depress averages.',
         'Genre membership includes mixed combinations, while standalone counts include exactly one genre. '
         'The groups overlap, so their counts cannot be added to obtain a distinct movie total.',
-        'This comparison uses the same genre bridge on annual series aggregates. '
+        'This comparison applies the same genre bridge to the series end metadata of the release fact. '
         'Known intervals do not establish actual annual activity; the separate unknown-end counts '
         'show why known intervals alone are incomplete as an activity proxy.',
         'Coverage differences demonstrate that availability of ratings is uneven. '
@@ -75,6 +75,9 @@ def main():
         'This is a project ranking of movies with at least 10,000 votes, ordered by rating, votes '
         'and identifier. It is not IMDb Top 250. The threshold improves vote support but is an '
         'analytical choice, and does not establish objective quality.',
+        'The catalogue snapshot is a periodic snapshot: new titles are a flow and can be summed over years, '
+        'while the year-end stock is semi-additive and may only be summed across types within one year. '
+        'The stock describes titles recorded in the current extract, not what IMDb listed at each past year-end.',
     ]
     for number, ((title, result), explanation) in enumerate(zip(results.items(), explanations), 1):
         columns, rows = result['columns'], result['rows']
@@ -132,6 +135,12 @@ def main():
                 lines += [f'The largest absolute change under the vote threshold occurs in the {row[0]}s: '
                           f'{row[4]:.2f} for all rated movies versus {row[6]:.2f} for movies with at least '
                           f'1,000 votes ({row[5]:,} movies). This is a composition effect, not a before/after change in ratings.', '']
+        if title.startswith('16.') and rows:
+            year = rows[0][0]
+            current = [r for r in rows if r[0] == year]
+            lines += [f'At the end of {year}, the catalogue holds {sum(r[3] for r in current):,} titles; '
+                      f'the largest type is {current[0][1]} with {current[0][3]:,} ({current[0][4]}%). '
+                      'Adding the stocks of the listed years would count the same titles several times.', '']
         if number == 10 and rows:
             row = rows[0]
             lines += [f'The first movie under these rules is **{row[1]}** ({row[2]}), '

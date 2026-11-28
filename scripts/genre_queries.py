@@ -1,4 +1,4 @@
-"""Genre membership filters shared by title detail and annual snapshots.
+"""Genre membership filters shared by title detail, series end metadata and the catalogue snapshot.
 
 Selection is OR: choosing Comedy and Romance includes a title with either tag
 once. Genre names use the source's English labels. Values are SQL parameters.
@@ -49,9 +49,11 @@ def series_counts_by_genres(conn, genres, year):
     values as a total of series in airing.
     """
     predicate, params = genre_filter(genres)
+    # Series end metadata lives on the release fact: a known interval covers the
+    # year inclusively; an unknown end counts once the series has started.
     return conn.execute(f'''
-        SELECT COALESCE(SUM(f.known_interval_series_count), 0),
-               COALESCE(SUM(f.started_series_unknown_end_count), 0)
-        FROM fact_series_year_snapshot f
-        WHERE {predicate} AND f.year_key = ?
-    ''', (*params, year)).fetchone()
+        SELECT COALESCE(SUM(f.series_end_status = 'known' AND f.end_year >= ?), 0),
+               COALESCE(SUM(f.series_end_status = 'unknown'), 0)
+        FROM fact_title_release f
+        WHERE f.series_end_status IN ('known', 'unknown') AND f.year_key <= ? AND {predicate}
+    ''', (year, year, *params)).fetchone()
